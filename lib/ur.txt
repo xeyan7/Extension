@@ -1,0 +1,1 @@
+function ur(t){if(!t||typeof t!="string")return null;let e=t.toUpperCase();return e.length===4&&(e="#"+e[1]+e[1]+e[2]+e[2]+e[3]+e[3]),e.length===9&&(e=e.substring(0,7)),cr[e]||null}

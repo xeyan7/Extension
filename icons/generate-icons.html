@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Create Icon</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: Arial, sans-serif;
+      background: #f5f5f5;
+    }
+    canvas {
+      border: 2px solid #ddd;
+      border-radius: 8px;
+      margin: 10px;
+      background: white;
+    }
+    .container {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 20px;
+    }
+    button {
+      padding: 10px 20px;
+      background: #4F46E5;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    button:hover {
+      background: #4338CA;
+    }
+  </style>
+</head>
+<body>
+  <h1>UI Component Copier - Icon Generator</h1>
+  <p>Right-click on each canvas and select "Save image as..." to save the icons.</p>
+  <div class="container" id="iconContainer"></div>
+
+  <script>
+    const sizes = [16, 32, 48, 128];
+    const container = document.getElementById('iconContainer');
+
+    sizes.forEach(size => {
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+
+      // Background gradient
+      const gradient = ctx.createLinearGradient(0, 0, size, size);
+      gradient.addColorStop(0, '#667eea');
+      gradient.addColorStop(1, '#764ba2');
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, size, size);
+
+      // Draw icon (paint brush/selector)
+      ctx.strokeStyle = 'white';
+      ctx.fillStyle = 'white';
+      ctx.lineWidth = size / 16;
+
+      // Draw a stylized component selector icon
+      const padding = size * 0.2;
+      const innerSize = size - (padding * 2);
+
+      // Draw corner brackets (selection frame)
+      ctx.lineWidth = size / 12;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      // Top-left corner
+      ctx.beginPath();
+      ctx.moveTo(padding + innerSize * 0.3, padding);
+      ctx.lineTo(padding, padding);
+      ctx.lineTo(padding, padding + innerSize * 0.3);
+      ctx.stroke();
+
+      // Top-right corner
+      ctx.beginPath();
+      ctx.moveTo(padding + innerSize * 0.7, padding);
+      ctx.lineTo(padding + innerSize, padding);
+      ctx.lineTo(padding + innerSize, padding + innerSize * 0.3);
+      ctx.stroke();
+
+      // Bottom-left corner
+      ctx.beginPath();
+      ctx.moveTo(padding, padding + innerSize * 0.7);
+      ctx.lineTo(padding, padding + innerSize);
+      ctx.lineTo(padding + innerSize * 0.3, padding + innerSize);
+      ctx.stroke();
+
+      // Bottom-right corner
+      ctx.beginPath();
+      ctx.moveTo(padding + innerSize * 0.7, padding + innerSize);
+      ctx.lineTo(padding + innerSize, padding + innerSize);
+      ctx.lineTo(padding + innerSize, padding + innerSize * 0.7);
+      ctx.stroke();
+
+      // Add crosshair in center
+      const center = size / 2;
+      const crossSize = size * 0.15;
+      ctx.lineWidth = size / 20;
+
+      ctx.beginPath();
+      ctx.moveTo(center - crossSize, center);
+      ctx.lineTo(center + crossSize, center);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(center, center - crossSize);
+      ctx.lineTo(center, center + crossSize);
+      ctx.stroke();
+
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = `<h3>icon${size}.png</h3>`;
+      wrapper.appendChild(canvas);
+      container.appendChild(wrapper);
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "name": "ui-component-copier-extension",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Development checks for the UI Component Copier browser extension.",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "check": "node --check background.js && node --check content.js && node --check lib/extractor.js && node --test tests/*.test.js"
+  }
+}

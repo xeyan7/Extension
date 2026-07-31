@@ -1519,11 +1519,12 @@
       try {
         const clone = element.cloneNode(true);
         // clean script/iframe/extension DOM nodes
-        clone.querySelectorAll('script, noscript, iframe, object, embed, #uicc-toolbar, .uicc-selection-overlay').forEach(node => node.remove());
+        clone.querySelectorAll('script, noscript, iframe, object, embed, #sd-toolbar, .uicc-selection-overlay').forEach(node => node.remove());
 
         const origElements = [element, ...element.querySelectorAll('*')];
         const cloneElements = [clone, ...clone.querySelectorAll('*')];
 
+        // CRITICAL: Properties that MUST be captured for exact styling
         const propsToExtract = [
           "display","position","top","right","bottom","left","z-index",
           "width","height","min-width","min-height","max-width","max-height",
@@ -1531,54 +1532,56 @@
           "padding","padding-top","padding-right","padding-bottom","padding-left",
           "flex-direction","flex-wrap","flex-grow","flex-shrink","flex-basis",
           "align-items","align-self","justify-content","gap","row-gap","column-gap",
-          "grid-template-columns","grid-template-rows","grid-column","grid-row",
-          "overflow","overflow-x","overflow-y","color","background","background-color",
-          "background-image","background-size","background-position","background-repeat",
+          "grid-template-columns","grid-template-rows","grid-column","grid-row","grid-auto-flow",
+          "overflow","overflow-x","overflow-y",
+          "color","background","background-color","background-image","background-size",
+          "background-position","background-repeat","background-attachment",
           "font-family","font-size","font-weight","font-style","line-height",
-          "letter-spacing","text-align","text-transform","text-decoration","white-space",
-          "word-break","text-overflow","border","border-width","border-style",
-          "border-color","border-radius","border-top-left-radius","border-top-right-radius",
-          "border-bottom-left-radius","border-bottom-right-radius","box-shadow","opacity",
-          "transform","transition","cursor","pointer-events","visibility","object-fit",
-          "object-position","aspect-ratio","isolation","mix-blend-mode","filter",
-          "backdrop-filter","outline","outline-offset","text-indent","vertical-align",
-          "list-style-type","table-layout","border-collapse","border-spacing","fill","stroke","stroke-width"
+          "letter-spacing","word-spacing","text-align","text-transform","text-decoration",
+          "white-space","word-break","text-overflow","text-indent","vertical-align",
+          "border","border-width","border-style","border-color","border-radius",
+          "border-top","border-right","border-bottom","border-left",
+          "border-top-left-radius","border-top-right-radius",
+          "border-bottom-left-radius","border-bottom-right-radius",
+          "box-shadow","opacity","transform","transition","cursor","pointer-events",
+          "visibility","object-fit","object-position","aspect-ratio","isolation",
+          "mix-blend-mode","filter","backdrop-filter","outline","outline-offset",
+          "list-style-type","list-style-position","table-layout","border-collapse",
+          "border-spacing","fill","stroke","stroke-width"
         ];
 
-        const defaultValues = {
-          position:"static", top:"auto", right:"auto", bottom:"auto", left:"auto",
-          "z-index":"auto", "min-width":"0px", "min-height":"0px", "max-width":"none", "max-height":"none",
-          "flex-grow":"0", "flex-shrink":"1", "flex-basis":"auto",
-          overflow:"visible", "overflow-x":"visible", "overflow-y":"visible",
-          transform:"none", filter:"none", "backdrop-filter":"none",
-          opacity:"1", visibility:"visible", cursor:"auto", "pointer-events":"auto",
-          isolation:"auto", "mix-blend-mode":"normal", "box-shadow":"none",
-          "text-transform":"none", "text-decoration":"none", "text-indent":"0px",
-          outline:"", "outline-offset":"0px", "object-fit":"fill", "aspect-ratio":"auto",
-          "white-space":"normal", "word-break":"normal", "text-overflow":"clip",
-          "border-collapse":"separate", "table-layout":"auto",
-          fill:"", stroke:"none", "stroke-width":"1"
-        };
-
+        // Apply computed styles as inline styles with !important
         for (let s = 0; s < origElements.length && s < cloneElements.length; s++) {
-          const origStyle = window.getComputedStyle(origElements[s]);
-          const cssRules = [];
+          const origEl = origElements[s];
+          const cloneEl = cloneElements[s];
+          const computedStyle = window.getComputedStyle(origEl);
+          
+          // Apply each property using setProperty with !important
           for (const prop of propsToExtract) {
-            const val = origStyle.getPropertyValue(prop);
-            if (!val || val === "" || val === defaultValues[prop] || (prop === "outline" && val.includes("63, 102, 241"))) continue;
-            cssRules.push(`${prop}:${val}`);
-          }
-          if (cssRules.length > 0) {
-            const existingStyle = cloneElements[s].getAttribute("style") || "";
-            cloneElements[s].setAttribute("style", existingStyle + (existingStyle ? ";" : "") + cssRules.join(";"));
+            const value = computedStyle.getPropertyValue(prop);
+            
+            // Skip only truly empty values or extension's own outline
+            if (!value || value === "" || (prop === "outline" && value.includes("63, 102, 241"))) continue;
+            
+            // CRITICAL: Apply with !important to ensure it's not overridden
+            try {
+              cloneEl.style.setProperty(prop, value, 'important');
+            } catch(e) {
+              // Fallback to setAttribute if setProperty fails
+              const currentStyle = cloneEl.getAttribute("style") || "";
+              cloneEl.setAttribute("style", currentStyle + (currentStyle ? ";" : "") + `${prop}:${value} !important`);
+            }
           }
         }
 
-        cloneElements.forEach(s => {
-          if (s.tagName === "IMG" && s.getAttribute("src")) {
-            const src = s.getAttribute("src");
-            if (!src.startsWith("http") && !src.startsWith("data:")) {
-              try { s.setAttribute("src", new URL(src, window.location.href).href); } catch(e) {}
+        // Fix image URLs
+        cloneElements.forEach(el => {
+          if (el.tagName === "IMG" && el.getAttribute("src")) {
+            const src = el.getAttribute("src");
+            if (!src.startsWith("http") && !src.startsWith("data:") && !src.startsWith("blob:")) {
+              try { 
+                el.setAttribute("src", new URL(src, window.location.href).href); 
+              } catch(e) {}
             }
           }
         });
@@ -1630,6 +1633,7 @@
         }
       }
 
+      // Miro's EXACT iframe template with minimal reset
       const docHtml = `<!DOCTYPE html>
 <html>
 <head>
@@ -1649,7 +1653,7 @@
       background: transparent;
     }
     body {
-      padding: 12px;
+      padding: 8px;
     }
     body > * {
       flex-shrink: 0;
@@ -1658,7 +1662,7 @@
   </style>
 </head>
 <body>
-  ${html}
+${html}
 </body>
 </html>`;
 
@@ -1668,6 +1672,7 @@
         doc.write(docHtml);
         doc.close();
 
+        // Miro's exact auto-sizing with 150ms delay
         setTimeout(() => {
           try {
             const body = doc.body;
@@ -1675,18 +1680,20 @@
             if (firstChild) {
               const rect = firstChild.getBoundingClientRect();
               const containerW = iframe.parentElement?.clientWidth || iframe.clientWidth || 300;
-              const elW = rect.width + 24;
-              if (elW > containerW && elW > 0) {
-                const zoom = Math.max(containerW / elW, 0.3);
+              const contentW = rect.width + 16; // 8px padding on each side
+              
+              // Scale down if content is wider than container
+              if (contentW > containerW && contentW > 0) {
+                const zoom = Math.max(containerW / contentW, 0.3);
                 body.style.zoom = zoom;
-                const h = rect.height * zoom + 24;
-                iframe.style.height = Math.min(Math.max(h, 60), 350) + 'px';
+                const scaledHeight = rect.height * zoom + 20;
+                iframe.style.height = Math.min(Math.max(scaledHeight, 60), 300) + 'px';
               } else {
-                iframe.style.height = Math.min(Math.max(rect.height + 24, 60), 350) + 'px';
+                iframe.style.height = Math.min(Math.max(rect.height + 20, 60), 300) + 'px';
               }
             }
           } catch (err) {
-            console.warn('UI Copier: iframe scaling error', err);
+            // Silent fail
           }
         }, 150);
       } catch (err) {

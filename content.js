@@ -64,12 +64,11 @@
     constructor() {
       this.toolbar = null;
       this.overlay = null;
-      this.highlight = null;
-      this.guidelines = null;
+      this.guidelines = null;     // absolute div appended to body for SVG guidelines + box model
       this.selectedElement = null;
       this.isSelectionMode = false;
       this.currentView = null;
-      this.currentElement = null;
+      this.currentElement = null; // currently hovered element (Q in Miro)
       this.pointerX = 0;
       this.pointerY = 0;
       this.extractor = globalThis.UICCExtractor
@@ -85,6 +84,14 @@
       this._boundKeyDown = null;
       this._boundRuntimeMessage = null;
       this._toastTimer = null;
+
+      // ── Miro-mirror inspector state ──────────────────────────────────────────
+      this._inspectHighlightStyle = null; // <style> tag injected into <head>
+      this._inspectOverlay = null;        // J  – frosted-glass preview panel
+      this._inspectCoordLabel = null;     // Z  – coordinate pill that follows cursor
+      this._inspectGuidelinesEl = null;   // q  – absolute div for SVG lines + box model
+      this._inspectHighlightClass = 'uicc-inspector-outline'; // Fe
+      // ────────────────────────────────────────────────────────────────────────
 
       this.init();
     }
@@ -126,9 +133,15 @@
       if (this.overlay) {
         this.overlay.remove();
         this.overlay = null;
-        this.highlight = null;
-        this.guidelines = null;
       }
+      // Clean up orphaned inspector elements
+      [this._inspectGuidelinesEl, this._inspectCoordLabel, this._inspectOverlay].forEach(el => {
+        if (el && el.parentNode) el.remove();
+      });
+      this._inspectGuidelinesEl = null;
+      this._inspectCoordLabel = null;
+      this._inspectOverlay = null;
+      this._miroRemoveHighlightStyle();
     }
 
     createToolbar() {
@@ -186,15 +199,6 @@
       this.overlay = document.createElement('div');
       this.overlay.className = 'uicc-selection-overlay uicc-hidden';
       this.overlay.setAttribute('aria-hidden', 'true');
-
-      this.highlight = document.createElement('div');
-      this.highlight.className = 'uicc-highlight';
-      this.overlay.appendChild(this.highlight);
-
-      this.guidelines = document.createElement('div');
-      this.guidelines.id = 'uicc-guidelines';
-      this.guidelines.className = 'uicc-guidelines';
-      this.overlay.appendChild(this.guidelines);
 
       document.body.appendChild(this.overlay);
     }
@@ -499,8 +503,8 @@
 
     isOwnUI(t) {
       if (!t) return false;
-      if (t.id && (t.id.startsWith('sd-') || t.id.startsWith('uicc-'))) return true;
-      if (t.closest && t.closest('#sd-toolbar, #uicc-guidelines, .uicc-selection-overlay, [id^="uicc-"], [id^="sd-"]')) return true;
+      if (t.id && (t.id.startsWith('sd-') || t.id.startsWith('uicc-') || t.id === 'sd-component-inspector')) return true;
+      if (t.closest && t.closest('#sd-toolbar, #sd-component-inspector, #sd-tree-navigator, #uicc-guidelines, .uicc-selection-overlay, [id^="uicc-"], [id^="sd-"]')) return true;
       if (this.overlay && this.overlay.contains(t)) return true;
       if (this.toolbar && this.toolbar.contains(t)) return true;
       return false;
@@ -577,105 +581,497 @@
         });
         if (best) result = best;
       }
+      // Superdesign parent bounding-box collapse algorithm
+      const o = result.getBoundingClientRect();
+      while (result && result.parentElement && result.parentElement !== document.body && result.parentElement !== document.documentElement) {
+        const r = result.parentElement.getBoundingClientRect();
+        if (
+          r.width === o.width &&
+          r.height === o.height &&
+          r.top === o.top &&
+          r.left === o.left &&
+          r.right === o.right &&
+          r.bottom === o.bottom
+        ) {
+          result = result.parentElement;
+        } else {
+          break;
+        }
+      }
       return result;
+    }    // ═══════════════════════════════════════════════════════════════════════════
+    // MIRO-EXACT INSPECTOR SYSTEM
+    // Mirrors: Jr (start), Et (stop), xt (mouseover), At (mouseout),
+    //          Ct (mousemove), vt (click), wt (keydown),
+    //          _r (inject highlight style), Br (remove highlight style),
+    //          Pr (create preview panel), Or (create guidelines div),
+    //          Dr (create coord label), $r (update coord label),
+    //          Le (add outline class), Ge (remove outline class),
+    //          Me (draw guidelines SVG), Te (draw box model),
+    //          Re (render preview panel), qr (set current hovered element),
+    //          Hr (clear hover state)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // ── _r: inject <style> for the outline class ─────────────────────────────
+    _miroInjectHighlightStyle() {
+      if (this._inspectHighlightStyle) return;
+      this._inspectHighlightStyle = document.createElement('style');
+      this._inspectHighlightStyle.id = 'uicc-inspector-highlight-style';
+      this._inspectHighlightStyle.textContent = `
+        .${this._inspectHighlightClass} {
+          outline: 2px solid #6366F1 !important;
+          outline-offset: 2px !important;
+        }
+      `;
+      document.head.appendChild(this._inspectHighlightStyle);
     }
 
-    startSelectorMode() {
-      this.isSelectionMode = true;
-      this.currentView = 'selector';
-      this.collapseToolbar('selector');
-      if (this.overlay?.classList) this.overlay.classList.remove('uicc-hidden');
-      if (document.body?.classList) document.body.classList.add('uicc-selection-active');
-
-      document.addEventListener('mouseover', this.onMouseOver, true);
-      document.addEventListener('mouseout', this.onMouseOut, true);
-      document.addEventListener('mousemove', this.onMouseMoveCoords, true);
-      document.addEventListener('click', this.onClickCapture, true);
-      document.addEventListener('keydown', this.onKeyDown, true);
-      window.addEventListener('scroll', this.onViewportChange, true);
-      window.addEventListener('resize', this.onViewportChange, true);
-      if (document.body) document.body.style.cursor = 'crosshair';
+    // ── Br: remove the injected <style> ──────────────────────────────────────
+    _miroRemoveHighlightStyle() {
+      if (this._inspectHighlightStyle) {
+        this._inspectHighlightStyle.remove();
+        this._inspectHighlightStyle = null;
+      }
     }
 
-    renderSelectorPrompt() {
-      const contentEl = this.toolbar?.querySelector('#uicc-content');
-      if (contentEl) {
-        contentEl.innerHTML = `
-          <div class="uicc-selector-status">
-            <div class="uicc-status-badge">Selector Active</div>
-            <p class="uicc-status-desc">Hover over any component on the webpage and click to inspect it.</p>
-            <div class="uicc-status-keys">
-              <span>▲▼ Navigate elements</span>
-              <span>ESC Cancel</span>
-            </div>
+    // ── Pr: create the frosted-glass preview panel (J) ───────────────────────
+    _miroCreatePreviewPanel() {
+      if (this._inspectOverlay) {
+        this._inspectOverlay.style.display = 'block';
+        return;
+      }
+      const el = document.createElement('div');
+      el.id = 'uicc-inspector-overlay';
+      el.style.cssText = `
+        position: fixed;
+        background: rgba(255, 255, 255, 0.92);
+        -webkit-backdrop-filter: saturate(180%) blur(20px);
+        backdrop-filter: saturate(180%) blur(20px);
+        color: #1D1D1F;
+        padding: 13px 14px;
+        border: 1px solid rgba(0, 0, 0, 0.06);
+        border-radius: 14px;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        font-size: 12px;
+        z-index: 2147483647;
+        pointer-events: none;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16), 0 0 0 0.5px rgba(0, 0, 0, 0.04);
+        max-width: 300px;
+        max-height: 80vh;
+        overflow-y: auto;
+        line-height: 1.5;
+        letter-spacing: -0.01em;
+        display: none;
+        color-scheme: light;
+      `;
+      document.body.appendChild(el);
+      this._inspectOverlay = el;
+    }
+
+    // ── Or: create the absolute guidelines container (q) ─────────────────────
+    _miroCreateGuidelines() {
+      if (this._inspectGuidelinesEl) {
+        this._inspectGuidelinesEl.style.display = '';
+        return;
+      }
+      const el = document.createElement('div');
+      el.id = 'uicc-inspector-guidelines';
+      el.style.cssText = `
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        pointer-events: none;
+        z-index: 999995;
+        overflow: visible;
+      `;
+      document.body.appendChild(el);
+      this._inspectGuidelinesEl = el;
+    }
+
+    // ── Dr: create the coordinate pill (Z) ───────────────────────────────────
+    _miroCreateCoordLabel() {
+      if (this._inspectCoordLabel) {
+        this._inspectCoordLabel.style.display = 'none';
+        return;
+      }
+      const el = document.createElement('div');
+      el.id = 'uicc-inspector-coord-label';
+      el.style.cssText = `
+        position: fixed;
+        background: rgba(255, 255, 255, 0.9);
+        -webkit-backdrop-filter: blur(8px);
+        backdrop-filter: blur(8px);
+        color: rgba(29, 29, 31, 0.85);
+        font-size: 10px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-variant-numeric: tabular-nums;
+        padding: 3px 7px;
+        border: 1px solid rgba(0, 0, 0, 0.08);
+        border-radius: 6px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+        pointer-events: none;
+        z-index: 2147483647;
+        white-space: nowrap;
+        transition: left 0.05s linear, top 0.05s linear;
+        color-scheme: light;
+        display: none;
+      `;
+      document.body.appendChild(el);
+      this._inspectCoordLabel = el;
+    }
+
+    // ── $r: update coord label position + text ───────────────────────────────
+    _miroUpdateCoordLabel(x, y) {
+      if (!this._inspectCoordLabel) return;
+      this._inspectCoordLabel.style.display = 'block';
+      this._inspectCoordLabel.style.left = (x + 14) + 'px';
+      this._inspectCoordLabel.style.top  = (y + 14) + 'px';
+      this._inspectCoordLabel.textContent = `${Math.round(x + window.scrollX)}, ${Math.round(y + window.scrollY)}`;
+    }
+
+    // ── Le: add outline class to element ─────────────────────────────────────
+    _miroAddOutline(el) {
+      this._miroRemoveOutline();
+      el.classList.add(this._inspectHighlightClass);
+    }
+
+    // ── Ge: remove outline class from any element ─────────────────────────────
+    _miroRemoveOutline() {
+      const existing = document.querySelector('.' + this._inspectHighlightClass);
+      if (existing) existing.classList.remove(this._inspectHighlightClass);
+    }
+
+    // ── Me: draw guidelines SVG lines in the absolute guidelines div ──────────
+    _miroDrawGuidelines(el) {
+      const q = this._inspectGuidelinesEl;
+      if (!q) return;
+      const rect = el.getBoundingClientRect();
+      const scrollX = window.scrollX || document.documentElement.scrollLeft;
+      const scrollY = window.scrollY || document.documentElement.scrollTop;
+      const scrollW = document.scrollingElement.scrollWidth;
+      const scrollH = document.scrollingElement.scrollHeight;
+      const viewW   = document.documentElement.clientWidth;
+      const absTop    = rect.top    + scrollY;
+      const absRight  = rect.right  + scrollX;
+      const absBottom = rect.bottom + scrollY;
+      const absLeft   = rect.left   + scrollX;
+
+      q.style.height = scrollH + 'px';
+      const NS = 'http://www.w3.org/2000/svg';
+      let svg = q.querySelector('svg');
+      if (!svg) {
+        svg = document.createElementNS(NS, 'svg');
+        svg.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;overflow:visible;';
+        q.insertBefore(svg, q.firstChild);
+      }
+      svg.setAttribute('width', '100%');
+      svg.setAttribute('viewBox', `0 0 ${viewW} ${scrollH}`);
+      svg.setAttribute('preserveAspectRatio', 'none');
+      svg.innerHTML = `
+        <line x1="${absLeft}"  y1="0" x2="${absLeft}"  y2="${scrollH}" stroke="rgba(135,112,163,0.4)" stroke-width="1" stroke-dasharray="4 4" />
+        <line x1="${absRight}" y1="0" x2="${absRight}" y2="${scrollH}" stroke="rgba(135,112,163,0.4)" stroke-width="1" stroke-dasharray="4 4" />
+        <line x1="0" y1="${absTop}"    x2="${scrollW}" y2="${absTop}"    stroke="rgba(135,112,163,0.4)" stroke-width="1" stroke-dasharray="4 4" />
+        <line x1="0" y1="${absBottom}" x2="${scrollW}" y2="${absBottom}" stroke="rgba(135,112,163,0.4)" stroke-width="1" stroke-dasharray="4 4" />
+      `;
+    }
+
+    // ── Nr: clear guidelines SVG ──────────────────────────────────────────────
+    _miroClearGuidelines() {
+      if (this._inspectGuidelinesEl) this._inspectGuidelinesEl.innerHTML = '';
+    }
+
+    // ── Te: draw margin/padding box model (Miro colours: purple margin, green padding) ──
+    _miroDrawBoxModel(el) {
+      const q = this._inspectGuidelinesEl;
+      if (!q) return;
+      q.querySelectorAll('.uicc-inspector-boxmodel').forEach(d => d.remove());
+
+      const rect = el.getBoundingClientRect();
+      const cs   = window.getComputedStyle(el);
+      const scrollX = window.scrollX || document.documentElement.scrollLeft;
+      const scrollY = window.scrollY || document.documentElement.scrollTop;
+
+      const absTop  = rect.top  + scrollY;
+      const absLeft = rect.left + scrollX;
+      const w = rect.width;
+      const h = rect.height;
+
+      const mT = Math.max(0, parseFloat(cs.marginTop)    || 0);
+      const mR = Math.max(0, parseFloat(cs.marginRight)  || 0);
+      const mB = Math.max(0, parseFloat(cs.marginBottom) || 0);
+      const mL = Math.max(0, parseFloat(cs.marginLeft)   || 0);
+      const pT = parseFloat(cs.paddingTop)    || 0;
+      const pR = parseFloat(cs.paddingRight)  || 0;
+      const pB = parseFloat(cs.paddingBottom) || 0;
+      const pL = parseFloat(cs.paddingLeft)   || 0;
+      const bT = parseFloat(cs.borderTopWidth)    || 0;
+      const bR = parseFloat(cs.borderRightWidth)  || 0;
+      const bB = parseFloat(cs.borderBottomWidth) || 0;
+      const bL = parseFloat(cs.borderLeftWidth)   || 0;
+
+      const hasMargin  = mT > 0 || mR > 0 || mB > 0 || mL > 0;
+      const hasPadding = pT > 0 || pR > 0 || pB > 0 || pL > 0;
+      if (!hasMargin && !hasPadding) return;
+
+      const container = document.createElement('div');
+      container.className = 'uicc-inspector-boxmodel';
+      container.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;';
+
+      // Miro exact colours
+      const marginBg     = 'rgba(135, 112, 163, 0.2)';
+      const marginBadge  = 'rgba(135, 112, 163, 0.85)';
+      const paddingBg    = 'rgba(76, 175, 80, 0.2)';
+      const paddingBadge = 'rgba(76, 175, 80, 0.85)';
+
+      const labelStyle = `
+        position:absolute;
+        color:#fff;
+        font-size:10px;
+        font-weight:600;
+        font-family:monospace;
+        padding:1px 5px;
+        border-radius:3px;
+        white-space:nowrap;
+        pointer-events:none;
+      `;
+
+      function box(t, l, bw, bh, bg, size, badgeBg) {
+        if (size <= 0 || bw <= 0 || bh <= 0) return '';
+        const val = Math.round(size * 10) / 10;
+        return `<div style="position:absolute;top:${t}px;left:${l}px;width:${bw}px;height:${bh}px;background:${bg};pointer-events:none;">
+          <div style="${labelStyle}background:${badgeBg};left:50%;top:50%;transform:translate(-50%,-50%)">${val}</div>
+        </div>`;
+      }
+
+      let html = '';
+      if (hasMargin) {
+        if (mT > 0) html += box(absTop - mT,         absLeft,       w,  mT, marginBg, mT, marginBadge);
+        if (mB > 0) html += box(absTop + h,           absLeft,       w,  mB, marginBg, mB, marginBadge);
+        if (mL > 0) html += box(absTop,               absLeft - mL, mL,   h, marginBg, mL, marginBadge);
+        if (mR > 0) html += box(absTop,               absLeft + w,  mR,   h, marginBg, mR, marginBadge);
+      }
+      if (hasPadding) {
+        const pt = absTop  + bT;
+        const pl = absLeft + bL;
+        const pw = w - bL - bR;
+        const ph = h - bT - bB;
+        if (pT > 0) html += box(pt,           pl,       pw, pT, paddingBg, pT, paddingBadge);
+        if (pB > 0) html += box(pt + ph - pB, pl,       pw, pB, paddingBg, pB, paddingBadge);
+        if (pL > 0) html += box(pt + pT,      pl,       pL, ph - pT - pB, paddingBg, pL, paddingBadge);
+        if (pR > 0) html += box(pt + pT,      pl + pw - pR, pR, ph - pT - pB, paddingBg, pR, paddingBadge);
+      }
+
+      container.innerHTML = html;
+      q.appendChild(container);
+    }
+
+    // ── Re: build and position the preview panel ──────────────────────────────
+    _miroRenderPreviewPanel(el) {
+      const J = this._inspectOverlay;
+      if (!J) return;
+
+      // Mirror Miro's Ur() inline — extract all style info
+      const cs = window.getComputedStyle(el);
+      const bgInfo = this.getBackgroundInfo(el);
+      const info = {
+        tagName:               el.tagName.toLowerCase(),
+        color:                 cs.color,
+        backgroundColor:       bgInfo.value,
+        backgroundIsGradient:  bgInfo.isGradient,
+        backgroundGradientValue: bgInfo.gradientValue,
+        fontFamily:            cs.fontFamily,
+        fontSize:              cs.fontSize,
+        fontWeight:            cs.fontWeight,
+      };
+      const hasText = el.textContent && el.textContent.trim().length > 0;
+
+      // ── Miro's exact inline helper functions (n and l) ──
+      const n = (title) =>
+        `<span style="font-size:9px;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;color:rgba(60,60,67,0.5);">${title}</span>`;
+
+      const l = (title, val) => {
+        if (!val || val === 'none' || val === 'transparent' || val === 'rgba(0, 0, 0, 0)') {
+          return `<div style="display:flex;align-items:center;gap:8px;">${n(title)}
+            <span style="font-size:11px;color:rgba(60,60,67,0.5);">${val || 'none'}</span></div>`;
+        }
+        return `<div style="display:flex;align-items:center;gap:8px;">${n(title)}
+          <span style="display:inline-flex;align-items:center;gap:6px;background:rgba(118,118,128,0.08);border:1px solid rgba(0,0,0,0.06);border-radius:6px;padding:2px 7px;">
+            <span style="width:11px;height:11px;border-radius:3px;background:${val};box-shadow:inset 0 0 0 1px rgba(0,0,0,0.12);flex-shrink:0;"></span>
+            <span style="font-size:11px;font-weight:500;color:#1D1D1F;font-variant-numeric:tabular-nums;">${val}</span>
+          </span></div>`;
+      };
+
+      // ── Miro's exact HTML template (c variable) ──
+      let c = `
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+          <span style="font-weight:600;color:#4F46E5;font-size:12px;background:rgba(99,102,241,0.10);border:1px solid rgba(99,102,241,0.20);border-radius:6px;padding:2px 8px;">&lt;${info.tagName}&gt;</span>
+          <span style="font-size:11px;color:rgba(60,60,67,0.5);font-variant-numeric:tabular-nums;">${Math.round(el.offsetWidth)} \xD7 ${Math.round(el.offsetHeight)}</span>
+        </div>
+      `;
+
+      c += '<div style="display:grid;gap:7px;">';
+      if (hasText) c += l('Text', info.color);
+
+      if (info.backgroundIsGradient) {
+        c += `<div style="display:flex;flex-direction:column;gap:5px;">${n('Gradient')}
+          <div style="background:${info.backgroundGradientValue};border-radius:6px;height:22px;box-shadow:inset 0 0 0 1px rgba(0,0,0,0.10);"></div>
+          <span style="font-size:10px;color:rgba(60,60,67,0.55);word-break:break-all;line-height:1.4;">${info.backgroundGradientValue}</span></div>`;
+      } else {
+        c += l('Background', info.backgroundColor);
+      }
+      c += '</div>';
+
+      if (hasText) {
+        const fontName = info.fontFamily.split(',')[0].replace(/['"]/g, '').trim();
+        c += `
+          <div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid rgba(0,0,0,0.06);">
+            ${n('Font')}
+            <span style="font-size:11px;color:#1D1D1F;"><strong style="font-weight:600;">${fontName}</strong>
+              <span style="color:rgba(60,60,67,0.5);">${info.fontSize} \xB7 ${info.fontWeight}</span></span>
           </div>
         `;
       }
+
+      // Miro's exact footer hint
+      c += `
+        <div style="display:flex;align-items:center;gap:5px;margin-top:10px;padding-top:9px;border-top:1px solid rgba(0,0,0,0.05);font-size:10px;color:rgba(60,60,67,0.45);">
+          <span style="background:rgba(118,118,128,0.10);border:1px solid rgba(0,0,0,0.08);border-radius:4px;padding:1px 5px;font-size:9px;font-weight:600;color:rgba(60,60,67,0.6);">&#9650;&#9660;</span> navigate
+        </div>
+      `;
+
+      J.innerHTML = c;
+      J.style.display = 'block';
+
+      // ── Miro's exact positioning logic ──
+      const rect = el.getBoundingClientRect();
+      const pRect = J.getBoundingClientRect();
+      const gap = 12;
+      let left = rect.left;
+      let top  = rect.bottom + gap;
+
+      // flip to above if panel overflows below
+      if (top + pRect.height > window.innerHeight) top = rect.top - pRect.height - gap;
+      // clamp right edge
+      if (left + pRect.width > window.innerWidth)  left = window.innerWidth - pRect.width - gap;
+      // clamp left edge
+      if (left < gap) left = gap;
+
+      J.style.left = left + 'px';
+      J.style.top  = top  + 'px';
     }
 
-    onMouseOver = (e) => {
-      if (!this.isSelectionMode) return;
-      if (this.isOwnUI(e.target)) return;
-      const picked = this.pickElement(e);
-      if (picked && picked !== this.currentElement) {
-        this.setCurrentElement(picked);
+    // ── qr: set hovered element and update all visuals ───────────────────────
+    _miroSetHovered(el) {
+      this.currentElement = el;
+      this._miroAddOutline(el);
+      this._miroDrawGuidelines(el);
+      this._miroDrawBoxModel(el);
+      this._miroRenderPreviewPanel(el);
+      this.renderHoverElementInfo(el);  // also update the toolbar panel
+    }
+
+    // ── Hr: clear hover state ─────────────────────────────────────────────────
+    _miroClearHover() {
+      this._miroRemoveOutline();
+      this._miroClearGuidelines();
+      if (this._inspectOverlay) this._inspectOverlay.style.display = 'none';
+      if (this._inspectCoordLabel) this._inspectCoordLabel.style.display = 'none';
+      // Only re-render toolbar prompt if not already showing it
+      const contentEl = this.toolbar?.querySelector('#uicc-content');
+      if (contentEl && !contentEl.querySelector('.uicc-selector-status')) {
+        this.renderSelectorPrompt();
       }
     }
 
-    onMouseOut = (e) => {
+    // ── xt: mouseover handler ─────────────────────────────────────────────────
+    _miroOnMouseover = (e) => {
       if (!this.isSelectionMode) return;
-      if (!e.target || e.target.nodeType !== 1) return;
-      if (this.isOwnUI(e.target)) return;
-      const related = e.relatedTarget;
-      if (related && this.currentElement && this.currentElement.contains(related)) return;
-      this.clearSelection();
+      const target = e.target;
+      if (this.isOwnUI(target) || !this.isSelectable(target)) return;
+
+      let el = target;
+      // prefer nearest media child under cursor (Miro exact logic)
+      const media = target.querySelectorAll('img, video, audio, canvas');
+      if (media.length > 0) {
+        let best = null, bestDist = Infinity;
+        const px = this.pointerX, py = this.pointerY;
+        media.forEach(m => {
+          const r = m.getBoundingClientRect();
+          const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+          const d = Math.hypot(cx - px, cy - py);
+          if (px >= r.left && px <= r.right && py >= r.top && py <= r.bottom && d < bestDist) {
+            bestDist = d; best = m;
+          }
+        });
+        if (best) el = best;
+      }
+
+      if (el !== this.currentElement) this._miroSetHovered(el);
     }
 
-    onMouseMoveCoords = (e) => {
+    // ── At: mouseout handler ──────────────────────────────────────────────────
+    _miroOnMouseout = (e) => {
+      if (!this.isSelectionMode) return;
+      const target = e.target;
+      if (this.isOwnUI(target)) return;
+      const related = e.relatedTarget;
+      // If mouse left the window entirely, clear everything
+      if (!related) {
+        this._miroClearHover();
+        this.currentElement = null;
+        return;
+      }
+      // don't clear if moving into a child of the current element
+      if (this.currentElement && this.currentElement.contains(related)) return;
+      this._miroClearHover();
+      this.currentElement = null;
+    }
+
+    // ── Ct: mousemove handler — updates pointer coords and coord label ────────
+    _miroOnMousemove = (e) => {
       if (!this.isSelectionMode) return;
       this.pointerX = e.clientX;
       this.pointerY = e.clientY;
+      this._miroUpdateCoordLabel(e.clientX, e.clientY);
     }
 
-    onViewportChange = () => {
-      if (!this.isSelectionMode || !this.currentElement?.isConnected) return;
-      this.highlightElement(this.currentElement);
-      this.drawGuidelines(this.currentElement);
-      this.drawBoxModel(this.currentElement);
-    }
-
-    onClickCapture = (e) => {
+    // ── vt: click handler ─────────────────────────────────────────────────────
+    _miroOnClick = (e) => {
       if (!this.isSelectionMode) return;
       if (this.isOwnUI(e.target)) return;
-
       e.preventDefault();
       e.stopImmediatePropagation();
-      this.pointerX = e.clientX;
-      this.pointerY = e.clientY;
-      const picked = this.pickElement(e) || this.currentElement;
-      if (!picked || !this.isSelectable(picked)) return;
-
-      this.selectedElement = picked;
+      const el = this.currentElement || document.elementFromPoint(e.clientX, e.clientY);
+      if (!el || this.isOwnUI(el) || !this.isSelectable(el)) return;
+      this.selectedElement = el;
       this._lastExtraction = null;
       this.exitSelectionMode();
       this.setActiveButton('selector');
       this.showSelectedComponent();
     }
 
-    onKeyDown = (e) => {
+    // ── wt: keydown handler ───────────────────────────────────────────────────
+    _miroOnKeydown = (e) => {
       if (!this.isSelectionMode) return;
       if (e.key === 'ArrowDown') {
         e.preventDefault();
         e.stopImmediatePropagation();
         if (!this.currentElement) return;
         const next = this.nextSelectable(this.currentElement);
-        if (next) { this.setCurrentElement(next); next.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+        if (next) {
+          this._miroSetHovered(next);
+          next.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
         e.stopImmediatePropagation();
         if (!this.currentElement) return;
         const prev = this.prevSelectable(this.currentElement);
-        if (prev) { this.setCurrentElement(prev); prev.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+        if (prev) {
+          this._miroSetHovered(prev);
+          prev.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
       } else if (e.key === 'Escape') {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -684,165 +1080,132 @@
       }
     }
 
+    // ── Jr: start inspector ───────────────────────────────────────────────────
+    startSelectorMode() {
+      this.isSelectionMode = true;
+      this.currentView = 'selector';
+      this.collapseToolbar('selector');
+      if (this.overlay?.classList) this.overlay.classList.remove('uicc-hidden');
+      if (document.body?.classList) document.body.classList.add('uicc-selection-active');
+
+      // Miro: inject all UI elements first
+      this._miroInjectHighlightStyle();
+      this._miroCreatePreviewPanel();
+      this._miroCreateGuidelines();
+      this._miroCreateCoordLabel();
+
+      document.addEventListener('mouseover', this._miroOnMouseover, true);
+      document.addEventListener('mouseout',  this._miroOnMouseout,  true);
+      document.addEventListener('mousemove', this._miroOnMousemove, true);
+      document.addEventListener('click',     this._miroOnClick,     true);
+      document.addEventListener('keydown',   this._miroOnKeydown,   true);
+      window.addEventListener('scroll',      this.onViewportChange, true);
+      window.addEventListener('resize',      this.onViewportChange, true);
+      if (document.body) document.body.style.cursor = 'crosshair';
+    }
+
+    // ── Et: stop inspector ────────────────────────────────────────────────────
+    exitSelectionMode() {
+      this.isSelectionMode = false;
+      if (this.overlay?.classList) this.overlay.classList.add('uicc-hidden');
+      if (document.body?.classList) document.body.classList.remove('uicc-selection-active');
+      if (document.body) document.body.style.cursor = '';
+
+      document.removeEventListener('mouseover', this._miroOnMouseover, true);
+      document.removeEventListener('mouseout',  this._miroOnMouseout,  true);
+      document.removeEventListener('mousemove', this._miroOnMousemove, true);
+      document.removeEventListener('click',     this._miroOnClick,     true);
+      document.removeEventListener('keydown',   this._miroOnKeydown,   true);
+      window.removeEventListener('scroll',      this.onViewportChange, true);
+      window.removeEventListener('resize',      this.onViewportChange, true);
+
+      // Miro: hide panel, remove outline, hide guidelines + coord label
+      if (this._inspectOverlay)       { this._inspectOverlay.style.display = 'none'; }
+      this._miroRemoveOutline();
+      this._miroRemoveHighlightStyle();
+      if (this._inspectGuidelinesEl)  { this._inspectGuidelinesEl.style.display = 'none'; this._inspectGuidelinesEl.innerHTML = ''; }
+      if (this._inspectCoordLabel)    { this._inspectCoordLabel.style.display = 'none'; }
+      if (this._viewportRafId)        { cancelAnimationFrame(this._viewportRafId); this._viewportRafId = null; }
+
+      this.currentElement = null;
+    }
+
+    // ── onViewportChange: re-draw on scroll/resize ────────────────────────────
+    _viewportRafId = null;
+    onViewportChange = () => {
+      if (!this.isSelectionMode || !this.currentElement?.isConnected) return;
+      if (this._viewportRafId) return;
+      this._viewportRafId = requestAnimationFrame(() => {
+        this._viewportRafId = null;
+        if (!this.isSelectionMode || !this.currentElement?.isConnected) return;
+        this._miroDrawGuidelines(this.currentElement);
+        this._miroDrawBoxModel(this.currentElement);
+        this._miroRenderPreviewPanel(this.currentElement);
+      });
+    }
+
+    // ── Stubs kept for backward-compat with showSelectedComponent ────────────
+    renderSelectorPrompt() {
+      const contentEl = this.toolbar?.querySelector('#uicc-content');
+      if (contentEl) {
+        contentEl.innerHTML = `
+          <div class="uicc-selector-status">
+            <div class="uicc-status-badge">Selector Active</div>
+            <p class="uicc-status-desc">Hover over any component on the webpage and click to inspect it.</p>
+            <div class="uicc-status-keys">
+              <span>&#9650;&#9660; Navigate</span>
+              <span>ESC Cancel</span>
+            </div>
+          </div>
+        `;
+      }
+    }
+
     setCurrentElement(el) {
       this.currentElement = el;
-      this.highlightElement(el);
-      this.drawGuidelines(el);
-      this.drawBoxModel(el);
-      this.renderHoverElementInfo(el);
+      this._miroSetHovered(el);
     }
 
     clearSelection() {
       this.currentElement = null;
-      this.highlightElement(null);
-      this.clearGuidelines();
-      this.clearBoxModel();
-      this.renderSelectorPrompt();
+      this._miroClearHover();
     }
 
     highlightElement(element) {
-      if (!this.highlight) return;
-      if (!element) {
-        this.highlight.style.width = '0px';
-        this.highlight.style.height = '0px';
-        return;
+      if (element && element.isConnected) {
+        this._miroAddOutline(element);
       }
-      if (this.highlight.classList) this.highlight.classList.add('uicc-highlight-active');
-      const rect = element.getBoundingClientRect();
-      this.highlight.style.top = `${rect.top}px`;
-      this.highlight.style.left = `${rect.left}px`;
-      this.highlight.style.width = `${rect.width}px`;
-      this.highlight.style.height = `${rect.height}px`;
     }
 
-    drawGuidelines(el) {
-      if (!this.guidelines) return;
-      const rect = el.getBoundingClientRect();
-      const docW = document.documentElement.clientWidth || window.innerWidth;
-      const docH = document.documentElement.clientHeight || window.innerHeight;
-      const vw = docW;
-
-      const top = rect.top;
-      const bottom = rect.bottom;
-      const left = rect.left;
-      const right = rect.right;
-
-      this.guidelines.style.height = docH + 'px';
-      let svg = this.guidelines.querySelector('svg');
-      if (!svg) {
-        svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        svg.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;overflow:visible;';
-        this.guidelines.insertBefore(svg, this.guidelines.firstChild);
-      }
-      svg.setAttribute('width', '100%');
-      svg.setAttribute('viewBox', `0 0 ${Math.max(vw, 1)} ${Math.max(docH, 1)}`);
-      svg.setAttribute('preserveAspectRatio', 'none');
-      svg.innerHTML = `
-        <line x1="${left}" y1="0" x2="${left}" y2="${docH}" stroke="rgba(255,255,255,0.3)" stroke-width="1" stroke-dasharray="3 3" />
-        <line x1="${right}" y1="0" x2="${right}" y2="${docH}" stroke="rgba(255,255,255,0.3)" stroke-width="1" stroke-dasharray="3 3" />
-        <line x1="0" y1="${top}" x2="${docW}" y2="${top}" stroke="rgba(255,255,255,0.3)" stroke-width="1" stroke-dasharray="3 3" />
-        <line x1="0" y1="${bottom}" x2="${docW}" y2="${bottom}" stroke="rgba(255,255,255,0.3)" stroke-width="1" stroke-dasharray="3 3" />
-      `;
-    }
-
-    clearGuidelines() {
-      if (this.guidelines) this.guidelines.innerHTML = '';
-    }
-
-    drawBoxModel(el) {
-      if (!this.guidelines) return;
-      this.clearBoxModel();
-      const cs = window.getComputedStyle(el);
-      const rect = el.getBoundingClientRect();
-      const top = rect.top;
-      const left = rect.left;
-      const w = rect.width;
-      const h = rect.height;
-
-      const mT = Math.max(0, parseFloat(cs.marginTop) || 0);
-      const mR = Math.max(0, parseFloat(cs.marginRight) || 0);
-      const mB = Math.max(0, parseFloat(cs.marginBottom) || 0);
-      const mL = Math.max(0, parseFloat(cs.marginLeft) || 0);
-
-      const pT = parseFloat(cs.paddingTop) || 0;
-      const pR = parseFloat(cs.paddingRight) || 0;
-      const pB = parseFloat(cs.paddingBottom) || 0;
-      const pL = parseFloat(cs.paddingLeft) || 0;
-
-      const bT = parseFloat(cs.borderTopWidth) || 0;
-      const bR = parseFloat(cs.borderRightWidth) || 0;
-      const bB = parseFloat(cs.borderBottomWidth) || 0;
-      const bL = parseFloat(cs.borderLeftWidth) || 0;
-
-      const hasMargin = mT > 0 || mR > 0 || mB > 0 || mL > 0;
-      const hasPadding = pT > 0 || pR > 0 || pB > 0 || pL > 0;
-      if (!hasMargin && !hasPadding) return;
-
-      const container = document.createElement('div');
-      container.className = 'uicc-boxmodel';
-      container.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:2147483645;';
-
-      const marginBg = 'rgba(255, 255, 255, 0.12)';
-      const marginBadge = 'rgba(0, 0, 0, 0.9)';
-      const paddingBg = 'rgba(160, 160, 160, 0.18)';
-      const paddingBadge = 'rgba(24, 24, 27, 0.9)';
-
-      const labelStyle = `position:absolute;color:#fff;font-size:10px;font-weight:600;font-family:monospace;padding:1px 4px;border-radius:3px;white-space:nowrap;pointer-events:none;left:50%;top:50%;transform:translate(-50%,-50%);`;
-
-      function makeBox(t, l, width, height, bg, size, badgeBg) {
-        if (size <= 0 || width <= 0 || height <= 0) return '';
-        const rounded = Math.round(size * 10) / 10;
-        return `<div style="position:absolute;top:${t}px;left:${l}px;width:${width}px;height:${height}px;background:${bg};pointer-events:none;">
-          <div style="${labelStyle}background:${badgeBg};">${rounded}</div>
-        </div>`;
-      }
-
-      let html = '';
-      if (hasMargin) {
-        if (mT > 0) html += makeBox(top - mT, left, w, mT, marginBg, mT, marginBadge);
-        if (mB > 0) html += makeBox(top + h, left, w, mB, marginBg, mB, marginBadge);
-        if (mL > 0) html += makeBox(top, left - mL, mL, h, marginBg, mL, marginBadge);
-        if (mR > 0) html += makeBox(top, left + w, mR, h, marginBg, mR, marginBadge);
-      }
-      if (hasPadding) {
-        const padTop = top + bT;
-        const padLeft = left + bL;
-        const padWidth = w - bL - bR;
-        const padHeight = h - bT - bB;
-        if (pT > 0) html += makeBox(padTop, padLeft, padWidth, pT, paddingBg, pT, paddingBadge);
-        if (pB > 0) html += makeBox(padTop + padHeight - pB, padLeft, padWidth, pB, paddingBg, pB, paddingBadge);
-        if (pL > 0) html += makeBox(padTop + pT, padLeft, pL, padHeight - pT - pB, paddingBg, pL, paddingBadge);
-        if (pR > 0) html += makeBox(padTop + pT, padLeft + padWidth - pR, pR, padHeight - pT - pB, paddingBg, pR, paddingBadge);
-      }
-
-      container.innerHTML = html;
-      this.guidelines.appendChild(container);
-    }
-
-    clearBoxModel() {
-      if (this.guidelines) this.guidelines.querySelectorAll('.uicc-boxmodel').forEach(d => d.remove());
-    }
+    // legacy compat – delegate to new system
+    clearGuidelines() { this._miroClearGuidelines(); }
+    clearBoxModel() { if (this._inspectGuidelinesEl) this._inspectGuidelinesEl.querySelectorAll('.uicc-inspector-boxmodel').forEach(d => d.remove()); }
 
     getBackgroundInfo(el) {
       const transparent = (t) => !t || t === 'transparent' || t === 'rgba(0, 0, 0, 0)';
       const alphaOf = (t) => {
         if (!t) return 0;
+        // support oklch/oklab too (mirrors Miro's ht function)
         const m = t.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
         if (m) return m[4] ? parseFloat(m[4]) : 1;
+        const ok = t.match(/^(?:oklch|oklab)\([^/]+\/\s*([\d.]+%?)\s*\)/i);
+        if (ok) return ok[1].endsWith('%') ? parseFloat(ok[1]) / 100 : parseFloat(ok[1]);
         return 1;
       };
-      const firstColor = (t) => {
+      const firstGradientColor = (t) => {
         if (!t || t === 'none') return null;
-        const re = [/rgba?\([^)]+\)/gi, /#[a-fA-F0-9]{3,8}\b/gi];
-        for (const r of re) { const m = t.match(r); if (m && m.length) return m[0]; }
+        for (const re of [/(?:oklab|oklch)\([^)]+\)/gi, /rgba?\([^)]+\)/gi, /hsla?\([^)]+\)/gi, /#[a-fA-F0-9]{3,8}\b/gi]) {
+          const m = t.match(re);
+          if (m && m.length) return m[0];
+        }
         return null;
       };
       let node = el, fallback = null;
       for (; node; node = node.parentElement) {
-        const cs = window.getComputedStyle(node);
+        const cs  = window.getComputedStyle(node);
         const img = cs.backgroundImage;
         if (img && img !== 'none' && img.includes('gradient')) {
-          const c = firstColor(img);
+          const c = firstGradientColor(img);
           if (c) return { value: c, isGradient: true, gradientValue: img };
         }
         const bg = cs.backgroundColor;
@@ -853,25 +1216,24 @@
         }
         if (node === document.documentElement) break;
       }
-      return fallback || { value: 'rgb(0, 0, 0)', isGradient: false };
+      return fallback || { value: 'rgb(255, 255, 255)', isGradient: false };
     }
 
-    // Render live element information directly INSIDE the expanded floating bar
+    // Render live element info INSIDE the floating toolbar (unchanged)
     renderHoverElementInfo(el) {
       const contentEl = this.toolbar?.querySelector('#uicc-content');
       if (!contentEl) return;
       const cs = window.getComputedStyle(el);
       const bg = this.getBackgroundInfo(el);
       const hasText = el.textContent && el.textContent.trim().length > 0;
-      const font = this.escapeHtml(cs.fontFamily.split(',')[0].replace(/['"]/g, '').trim());
+      const font = this.escapeHtml(cs.fontFamily.split(',')[0].replace(/["']/g, '').trim());
 
-      const html = `
+      contentEl.innerHTML = `
         <div class="uicc-hover-preview">
           <div class="uicc-hover-header">
             <span class="uicc-tag-badge">&lt;${el.tagName.toLowerCase()}&gt;</span>
-            <span class="uicc-dim-badge">${Math.round(el.offsetWidth)} × ${Math.round(el.offsetHeight)} px</span>
+            <span class="uicc-dim-badge">${Math.round(el.offsetWidth)} \xD7 ${Math.round(el.offsetHeight)} px</span>
           </div>
-
           <div class="uicc-hover-specs">
             <div class="uicc-spec-row">
               <span class="uicc-spec-label">Class</span>
@@ -880,7 +1242,7 @@
             ${hasText ? `
               <div class="uicc-spec-row">
                 <span class="uicc-spec-label">Font</span>
-                <span class="uicc-spec-val">${font} · ${cs.fontSize}</span>
+                <span class="uicc-spec-val">${font} &middot; ${cs.fontSize}</span>
               </div>
               <div class="uicc-spec-row">
                 <span class="uicc-spec-label">Color</span>
@@ -892,36 +1254,9 @@
               <span class="uicc-spec-val"><span class="uicc-color-dot" style="background:${bg.value}"></span> ${bg.value}</span>
             </div>
           </div>
-
-          <div class="uicc-hover-cta">
-            Click to inspect this element
-          </div>
+          <div class="uicc-hover-cta">Click to inspect this element</div>
         </div>
       `;
-
-      contentEl.innerHTML = html;
-    }
-
-    exitSelectionMode() {
-      this.isSelectionMode = false;
-      if (this.overlay?.classList) this.overlay.classList.add('uicc-hidden');
-      if (document.body?.classList) document.body.classList.remove('uicc-selection-active');
-      if (document.body) document.body.style.cursor = '';
-      document.removeEventListener('mouseover', this.onMouseOver, true);
-      document.removeEventListener('mouseout', this.onMouseOut, true);
-      document.removeEventListener('mousemove', this.onMouseMoveCoords, true);
-      document.removeEventListener('click', this.onClickCapture, true);
-      document.removeEventListener('keydown', this.onKeyDown, true);
-      window.removeEventListener('scroll', this.onViewportChange, true);
-      window.removeEventListener('resize', this.onViewportChange, true);
-      this.currentElement = null;
-      if (this.highlight) {
-        this.highlight.style.width = '0px';
-        this.highlight.style.height = '0px';
-        if (this.highlight.classList) this.highlight.classList.remove('uicc-highlight-active');
-      }
-      this.clearGuidelines();
-      this.clearBoxModel();
     }
 
     getBreadcrumbTrail(element) {
@@ -952,9 +1287,32 @@
       const element = this.selectedElement;
       const styles = window.getComputedStyle(element);
       const elementType = this.getElementType(element);
-      const preview = this.createComponentPreview(element);
       const properties = this.extractProperties(element, styles);
       const breadcrumbs = this.getBreadcrumbTrail(element);
+
+      const tag = element.tagName.toLowerCase();
+      const isMedia = tag === 'img' || tag === 'video' || tag === 'svg' || tag === 'canvas';
+
+      let previewContainerHtml = '';
+      if (tag === 'img' && element.src) {
+        previewContainerHtml = `<div class="uicc-media-preview-box"><img src="${this.escapeHtml(element.src)}" alt="${this.escapeHtml(element.alt || '')}"></div>`;
+      } else if (tag === 'video' && element.src) {
+        previewContainerHtml = `<div class="uicc-media-preview-box"><video src="${this.escapeHtml(element.src)}" controls></video></div>`;
+      } else if (tag === 'svg') {
+        previewContainerHtml = `<div class="uicc-media-preview-box">${element.outerHTML}</div>`;
+      } else if (tag === 'canvas') {
+        try {
+          previewContainerHtml = `<div class="uicc-media-preview-box"><img src="${element.toDataURL()}"></div>`;
+        } catch(e) {
+          previewContainerHtml = `<div class="uicc-media-preview-box"><span style="font-size:11px;color:#9ca3af;">Canvas Preview</span></div>`;
+        }
+      } else {
+        previewContainerHtml = `
+          <div class="uicc-component-preview-container">
+            <iframe id="uicc-preview-iframe" class="uicc-preview-iframe"></iframe>
+          </div>
+        `;
+      }
 
       const content = `
         <div class="uicc-breadcrumb">
@@ -971,9 +1329,7 @@
             <span class="uicc-element-type-badge">${elementType}</span>
             <span style="font-size:11px;color:#a1a1aa;margin-left:auto;">${Math.round(element.offsetWidth)} × ${Math.round(element.offsetHeight)} px</span>
           </div>
-          <div class="uicc-preview-image">
-            ${preview}
-          </div>
+          ${previewContainerHtml}
         </div>
 
         <div class="uicc-copy-options">
@@ -1001,6 +1357,10 @@
       `;
 
       this.toolbar.querySelector('#uicc-content').innerHTML = content;
+
+      if (!isMedia) {
+        this.renderIframePreview(element);
+      }
 
       const saveBtn = this.toolbar.querySelector('#uicc-save-btn');
       if (saveBtn) {
@@ -1092,6 +1452,7 @@
               this.selectedElement.style[prop] = newVal;
               this._lastExtraction = null;
               this.highlightElement(this.selectedElement);
+              this.renderIframePreview(this.selectedElement);
             } catch (e) {
               console.warn('UI Copier: style update error', e);
             }
@@ -1149,7 +1510,188 @@
       } catch (e) {
         console.warn('UI Copier: preview build error', e);
       }
-      return '<div>Preview</div>';
+      return '<div>Preview unavailable</div>';
+    }
+
+    // ── Miro-exact getComputedStyleSnapshot ──────────────────────────────────
+    getComputedStyleSnapshot(element) {
+      if (!element || !element.isConnected) return { html: '', css: '' };
+      try {
+        const clone = element.cloneNode(true);
+        // clean script/iframe/extension DOM nodes
+        clone.querySelectorAll('script, noscript, iframe, object, embed, #uicc-toolbar, .uicc-selection-overlay').forEach(node => node.remove());
+
+        const origElements = [element, ...element.querySelectorAll('*')];
+        const cloneElements = [clone, ...clone.querySelectorAll('*')];
+
+        const propsToExtract = [
+          "display","position","top","right","bottom","left","z-index",
+          "width","height","min-width","min-height","max-width","max-height",
+          "margin","margin-top","margin-right","margin-bottom","margin-left",
+          "padding","padding-top","padding-right","padding-bottom","padding-left",
+          "flex-direction","flex-wrap","flex-grow","flex-shrink","flex-basis",
+          "align-items","align-self","justify-content","gap","row-gap","column-gap",
+          "grid-template-columns","grid-template-rows","grid-column","grid-row",
+          "overflow","overflow-x","overflow-y","color","background","background-color",
+          "background-image","background-size","background-position","background-repeat",
+          "font-family","font-size","font-weight","font-style","line-height",
+          "letter-spacing","text-align","text-transform","text-decoration","white-space",
+          "word-break","text-overflow","border","border-width","border-style",
+          "border-color","border-radius","border-top-left-radius","border-top-right-radius",
+          "border-bottom-left-radius","border-bottom-right-radius","box-shadow","opacity",
+          "transform","transition","cursor","pointer-events","visibility","object-fit",
+          "object-position","aspect-ratio","isolation","mix-blend-mode","filter",
+          "backdrop-filter","outline","outline-offset","text-indent","vertical-align",
+          "list-style-type","table-layout","border-collapse","border-spacing","fill","stroke","stroke-width"
+        ];
+
+        const defaultValues = {
+          position:"static", top:"auto", right:"auto", bottom:"auto", left:"auto",
+          "z-index":"auto", "min-width":"0px", "min-height":"0px", "max-width":"none", "max-height":"none",
+          "flex-grow":"0", "flex-shrink":"1", "flex-basis":"auto",
+          overflow:"visible", "overflow-x":"visible", "overflow-y":"visible",
+          transform:"none", filter:"none", "backdrop-filter":"none",
+          opacity:"1", visibility:"visible", cursor:"auto", "pointer-events":"auto",
+          isolation:"auto", "mix-blend-mode":"normal", "box-shadow":"none",
+          "text-transform":"none", "text-decoration":"none", "text-indent":"0px",
+          outline:"", "outline-offset":"0px", "object-fit":"fill", "aspect-ratio":"auto",
+          "white-space":"normal", "word-break":"normal", "text-overflow":"clip",
+          "border-collapse":"separate", "table-layout":"auto",
+          fill:"", stroke:"none", "stroke-width":"1"
+        };
+
+        for (let s = 0; s < origElements.length && s < cloneElements.length; s++) {
+          const origStyle = window.getComputedStyle(origElements[s]);
+          const cssRules = [];
+          for (const prop of propsToExtract) {
+            const val = origStyle.getPropertyValue(prop);
+            if (!val || val === "" || val === defaultValues[prop] || (prop === "outline" && val.includes("63, 102, 241"))) continue;
+            cssRules.push(`${prop}:${val}`);
+          }
+          if (cssRules.length > 0) {
+            const existingStyle = cloneElements[s].getAttribute("style") || "";
+            cloneElements[s].setAttribute("style", existingStyle + (existingStyle ? ";" : "") + cssRules.join(";"));
+          }
+        }
+
+        cloneElements.forEach(s => {
+          if (s.tagName === "IMG" && s.getAttribute("src")) {
+            const src = s.getAttribute("src");
+            if (!src.startsWith("http") && !src.startsWith("data:")) {
+              try { s.setAttribute("src", new URL(src, window.location.href).href); } catch(e) {}
+            }
+          }
+        });
+
+        return { html: clone.outerHTML, css: "" };
+      } catch (e) {
+        console.error("getComputedStyleSnapshot error", e);
+        return { html: element.outerHTML, css: "" };
+      }
+    }
+
+    // ── Miro-exact iframe document population + auto zoom & height scaling ────
+    async renderIframePreview(element) {
+      const iframe = this.toolbar?.querySelector('#uicc-preview-iframe');
+      if (!iframe) return;
+
+      // Show Miro's exact loading spinner state initially
+      try {
+        const doc = iframe.contentDocument || iframe.contentWindow.document;
+        doc.open();
+        doc.write(`<html><body style="margin:0; display:flex; align-items:center; justify-content:center; height:100%; font-family:-apple-system,BlinkMacSystemFont,sans-serif; color:#9ca3af; font-size:12px; gap:8px;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2" style="animation:uicc-spin 1s linear infinite;"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+          <style>@keyframes uicc-spin{to{transform:rotate(360deg)}}</style>
+          Loading preview...
+        </body></html>`);
+        doc.close();
+      } catch(e) {}
+
+      let html = '', css = '';
+      
+      // ALWAYS use getComputedStyleSnapshot for preview to ensure exact styling
+      // This applies all computed styles as inline styles, preserving fonts, colors, and layout
+      try {
+        const snapshot = this.getComputedStyleSnapshot(element);
+        html = snapshot.html || element.outerHTML;
+        css = snapshot.css || '';
+      } catch(e) {
+        console.warn('UI Copier: getComputedStyleSnapshot failed, trying extraction fallback', e);
+        try {
+          const extracted = await this.getExtraction(element);
+          if (extracted && extracted.html) {
+            html = extracted.html;
+            css = extracted.css || '';
+          }
+        } catch(e2) {
+          console.warn('UI Copier: all preview methods failed', e2);
+          html = element.outerHTML;
+          css = '';
+        }
+      }
+
+      const docHtml = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { box-sizing: border-box; }
+    a { text-decoration: inherit; color: inherit; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      min-height: 100%;
+      width: fit-content;
+      min-width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+    }
+    body {
+      padding: 12px;
+    }
+    body > * {
+      flex-shrink: 0;
+    }
+    ${css}
+  </style>
+</head>
+<body>
+  ${html}
+</body>
+</html>`;
+
+      try {
+        const doc = iframe.contentDocument || iframe.contentWindow.document;
+        doc.open();
+        doc.write(docHtml);
+        doc.close();
+
+        setTimeout(() => {
+          try {
+            const body = doc.body;
+            const firstChild = body.firstElementChild;
+            if (firstChild) {
+              const rect = firstChild.getBoundingClientRect();
+              const containerW = iframe.parentElement?.clientWidth || iframe.clientWidth || 300;
+              const elW = rect.width + 24;
+              if (elW > containerW && elW > 0) {
+                const zoom = Math.max(containerW / elW, 0.3);
+                body.style.zoom = zoom;
+                const h = rect.height * zoom + 24;
+                iframe.style.height = Math.min(Math.max(h, 60), 350) + 'px';
+              } else {
+                iframe.style.height = Math.min(Math.max(rect.height + 24, 60), 350) + 'px';
+              }
+            }
+          } catch (err) {
+            console.warn('UI Copier: iframe scaling error', err);
+          }
+        }, 150);
+      } catch (err) {
+        console.warn('UI Copier: iframe render error', err);
+      }
     }
 
     extractProperties(element, styles) {
@@ -1281,16 +1823,24 @@
       try {
         await navigator.clipboard.writeText(text);
       } catch (e) {
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        textarea.style.left = '-9999px';
-        document.body.appendChild(textarea);
-        textarea.select();
-        const copied = document.execCommand('copy');
-        document.body.removeChild(textarea);
-        if (!copied) throw e;
+        try {
+          const textarea = document.createElement('textarea');
+          textarea.value = text;
+          textarea.style.position = 'fixed';
+          textarea.style.opacity = '0';
+          textarea.style.left = '-9999px';
+          document.body.appendChild(textarea);
+          textarea.select();
+          const copied = document.execCommand('copy');
+          document.body.removeChild(textarea);
+          if (copied) return;
+        } catch (_) {}
+        const runtime = getExtensionRuntime();
+        if (runtime?.sendMessage) {
+          await runtime.sendMessage({ action: 'copyToClipboard', text });
+        } else {
+          throw e;
+        }
       }
     }
 
@@ -1410,11 +1960,18 @@
     }
 
     classifyColor(hexOrRgb) {
-      if (hexOrRgb && hexOrRgb.includes('gradient')) return 'Gradient';
-      const hex = this.rgbToHex(hexOrRgb);
+      if (!hexOrRgb || typeof hexOrRgb !== 'string') return 'Other';
+      const trimmed = hexOrRgb.trim();
+      if (!trimmed || trimmed === 'transparent' || trimmed === 'none') return 'Other';
+      if (trimmed.includes('gradient')) return 'Gradient';
+      const hex = this.rgbToHex(trimmed);
       if (!hex || !hex.startsWith('#')) return 'Other';
       const clean = hex.slice(1);
       if (clean.length < 6) return 'Other';
+      if (clean.length === 8) {
+        const alpha = parseInt(clean.substring(6, 8), 16);
+        if (alpha === 0) return 'Other';
+      }
       const num = parseInt(clean.substring(0, 6), 16);
       if (isNaN(num)) return 'Other';
       const r = (num >> 16) & 255, g = (num >> 8) & 255, b = num & 255;
@@ -1826,7 +2383,8 @@ Integrate these tokens directly into your CSS variables, Tailwind configuration,
         sources.forEach(src => addMedia(audio, src, { name: player.getAttribute('aria-label') || 'Audio', kind: 'audio' }));
       });
 
-      const allElements = Array.from(document.querySelectorAll('body, body *')).filter(element => !this.isOwnUI(element));
+      const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'LINK', 'META', 'HEAD', 'NOSCRIPT', 'TEMPLATE', 'IFRAME', 'OBJECT', 'EMBED']);
+      const allElements = Array.from(document.querySelectorAll('body, body *')).filter(element => !this.isOwnUI(element) && !SKIP_TAGS.has(element.tagName));
       const scanLimit = 12000;
       const scanTruncated = allElements.length > scanLimit;
       const visibleElements = allElements.slice(0, scanLimit);
@@ -1851,7 +2409,7 @@ Integrate these tokens directly into your CSS variables, Tailwind configuration,
           colors.set(hex, (colors.get(hex) || 0) + 1);
         }
 
-        const family = style.fontFamily.split(',')[0].replace(/["']/g, '').trim();
+        const family = style.fontFamily ? style.fontFamily.split(',')[0].replace(/["']/g, '').trim() : '';
         const hasDirectText = Array.from(element.childNodes || []).some(node => node.nodeType === 3 && node.nodeValue?.trim());
         const isTextControl = ['INPUT', 'TEXTAREA', 'BUTTON', 'SELECT'].includes(element.tagName);
         if (family && (hasDirectText || isTextControl)) {
@@ -1863,7 +2421,7 @@ Integrate these tokens directly into your CSS variables, Tailwind configuration,
           current.count += 1;
           fonts.set(key, current);
         }
-        if (elementIndex > 0 && elementIndex % 400 === 0) {
+        if (elementIndex > 0 && elementIndex % 200 === 0) {
           await new Promise(resolve => setTimeout(resolve, 0));
           if (this.currentView !== 'assets') break;
         }
@@ -2106,10 +2664,12 @@ Integrate these tokens directly into your CSS variables, Tailwind configuration,
     }
 
     rgbToHex(rgb) {
-      if (!rgb) return '#000000';
-      if (rgb.startsWith('#')) return rgb.toUpperCase();
-      const match = rgb.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-      if (!match) return rgb;
+      if (!rgb || typeof rgb !== 'string') return null;
+      const clean = rgb.trim();
+      if (!clean) return null;
+      if (clean.startsWith('#')) return clean.toUpperCase();
+      const match = clean.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+      if (!match) return null;
       const [_, r, g, b] = match;
       return '#' + [r, g, b].map(x => parseInt(x, 10).toString(16).padStart(2, '0')).join('').toUpperCase();
     }

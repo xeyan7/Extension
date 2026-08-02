@@ -1,1 +1,0 @@
-function fr(t){if(!t||t.length!==9)return null;const e=t.substring(7,9),r=Math.round(parseInt(e,16)/255*100);return r>=100?null:r}

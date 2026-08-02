@@ -11,7 +11,8 @@
     "webNavigation",
     "downloads",
     "tabs",
-    "clipboardWrite"
+    "clipboardWrite",
+    "offscreen"
   ],
   "host_permissions": [
     "<all_urls>"

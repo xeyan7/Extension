@@ -1299,7 +1299,9 @@
       } else if (tag === 'video' && element.src) {
         previewContainerHtml = `<div class="uicc-media-preview-box"><video src="${this.escapeHtml(element.src)}" controls></video></div>`;
       } else if (tag === 'svg') {
-        previewContainerHtml = `<div class="uicc-media-preview-box">${element.outerHTML}</div>`;
+        // Sanitize via cleanSVG: page-controlled SVG must never be injected raw
+        // into the toolbar (on* handlers / foreignObject <img onerror> would run).
+        previewContainerHtml = `<div class="uicc-media-preview-box">${this.cleanSVG(element)}</div>`;
       } else if (tag === 'canvas') {
         try {
           previewContainerHtml = `<div class="uicc-media-preview-box"><img src="${element.toDataURL()}"></div>`;
@@ -1537,6 +1539,17 @@
         const clone = element.cloneNode(true);
         // clean script/iframe/extension DOM nodes
         clone.querySelectorAll('script, noscript, iframe, object, embed, #sd-toolbar, .uicc-selection-overlay').forEach(node => node.remove());
+
+        // Strip on* handlers and dangerous URL attributes so page-controlled
+        // markup written into the preview iframe can never execute (MED-4).
+        for (const node of [clone, ...clone.querySelectorAll('*')]) {
+          for (const attr of Array.from(node.attributes || [])) {
+            const name = attr.name.toLowerCase();
+            if (name.startsWith('on')) node.removeAttribute(attr.name);
+            else if (['href', 'src', 'action', 'formaction', 'data', 'xlink:href'].includes(name) &&
+                /^(?:javascript|vbscript):/i.test(attr.value.trim())) node.removeAttribute(attr.name);
+          }
+        }
 
         const origElements = [element, ...element.querySelectorAll('*')];
         const cloneElements = [clone, ...clone.querySelectorAll('*')];

@@ -54,18 +54,36 @@ function parseIPv4To32Bit(ip) {
     return isNaN(val) || val < 0 || val > 0xffffffff ? null : val >>> 0;
   }
   const parts = clean.split('.');
-  if (parts.length !== 4) return null;
+  if (parts.length < 1 || parts.length > 4) return null;
+  // Support short forms (browsers resolve 127.1 → 127.0.0.1, 10.1 → 10.0.0.1,
+  // 192.168.1 → 192.168.0.1). First n-1 parts are 8-bit, last part carries the
+  // remaining bits — without this, 127.1/10.1 bypass the private-IP guard.
   let num = 0;
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
     let n;
     if (/^0[0-7]+$/.test(part)) n = parseInt(part, 8);
+    else if (/^0x[0-9a-f]+$/i.test(part)) n = parseInt(part, 16);
     else if (/^\d+$/.test(part)) n = parseInt(part, 10);
     else return null;
-    if (isNaN(n) || n < 0 || n > 255) return null;
-    num = (num << 8) + n;
+    const isLast = i === parts.length - 1;
+    const maxBits = isLast ? 32 - 8 * (parts.length - 1) : 8;
+    if (isNaN(n) || n < 0 || n >= (1 << maxBits)) return null;
+    num = (num << maxBits) + n;
   }
   return num >>> 0;
+}
+
+function isPrivateIPv6Literal(hostname) {
+  // hostname from new URL() keeps the brackets for IPv6, e.g. "[::1]".
+  const lower = String(hostname || '').toLowerCase().trim();
+  let core = lower;
+  if (core.startsWith('[') && core.endsWith(']')) core = core.slice(1, -1);
+  if (core.startsWith('::ffff:')) core = core.slice(7); // IPv4-mapped → handled by IPv4 parser
+  if (core === '::1' || core === '::') return true; // loopback + unspecified
+  if (/^fe80:/i.test(core) || /^fe8[0-9a-f]:/i.test(core)) return true; // fe80::/10 link-local
+  if (/^fc[0-9a-f]{2}:/i.test(core) || /^fd[0-9a-f]{2}:/i.test(core)) return true; // fc00::/7 unique local
+  return false;
 }
 
 function isPrivateHostname(hostname) {
@@ -80,8 +98,9 @@ function isPrivateHostname(hostname) {
     if (b1 === 10) return true; // 10.0.0.0/8
     if (b1 === 172 && b2 >= 16 && b2 <= 31) return true; // 172.16.0.0/12
     if (b1 === 192 && b2 === 168) return true; // 192.168.0.0/16
-    if (b1 === 0 || b1 === 169 && b2 === 254) return true; // Link-local
+    if (b1 === 0 || b1 === 169 && b2 === 254) return true; // 0.0.0.0/8 + Link-local 169.254.0.0/16
   }
+  if (lower.includes(':')) return isPrivateIPv6Literal(lower);
   return false;
 }
 
@@ -118,7 +137,11 @@ function isSafeRemoteUrl(url) {
   try {
     const parsed = new URL(url);
     if (!['http:', 'https:'].includes(parsed.protocol)) return false;
-    return !isPrivateHostname(parsed.hostname);
+    if (isPrivateHostname(parsed.hostname)) return false;
+    // Defeat DNS rebinding: never trust a raw IP-style literal that failed the
+    // parser, and reject userinfo so credentials can't be smuggled past the host.
+    if (parsed.username || parsed.password) return false;
+    return true;
   } catch (_) { return false; }
 }
 
@@ -315,6 +338,8 @@ async function expandImports(css, baseUrl, seen = new Set(), depth = 0) {
     try {
       const response = await fetchWithTimeout(absolute, { headers: { Accept: 'text/css,*/*' } });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      // DNS-rebinding guard: the DNS answer may differ from the pre-fetch check.
+      if (response.url && !isSafeRemoteUrl(response.url)) throw new Error('Unsafe redirect target');
       let imported = await response.text();
       imported = await expandImports(imported, absolute, seen, depth + 1);
       imported = resolveCssUrls(imported, absolute);
@@ -335,7 +360,59 @@ function storageSet(value) {
   }));
 }
 
+// ── Miro-mirrored clipboard: MV3 offscreen document write ───────────────────
+// Service workers cannot reliably use navigator.clipboard.writeText, so the
+// real write happens in a dedicated offscreen document (CLIPBOARD reason).
+// This replaces the old no-op stub that claimed success without copying.
+//
+// The forward uses a DISTINCT action ('offscreenWrite') on purpose: content
+// scripts' 'copyToClipboard' messages are broadcast to every extension context
+// (background + offscreen), so if offscreen.js listened for the same action it
+// would double-write and double-respond. The distinct action also removes any
+// self-delivery ambiguity for the background's own sendMessage.
+let _offscreenClipboardPromise = null;
+
+async function ensureOffscreenClipboardDocument() {
+  if (typeof globalThis.chrome?.offscreen === 'undefined') return false;
+  if (_offscreenClipboardPromise) return _offscreenClipboardPromise;
+  _offscreenClipboardPromise = (async () => {
+    try {
+      const hasDoc = await chrome.offscreen.hasDocument();
+      if (!hasDoc) {
+        await chrome.offscreen.createDocument({
+          url: 'offscreen.html',
+          reasons: ['CLIPBOARD'],
+          justification: 'Write extracted component code to the system clipboard when the page-context fallbacks are unavailable.'
+        });
+      }
+      return true;
+    } catch (_) {
+      _offscreenClipboardPromise = null; // allow retry on next call
+      return false;
+    }
+  })();
+  return _offscreenClipboardPromise;
+}
+
+async function copyViaOffscreenDocument(text) {
+  try {
+    const ready = await ensureOffscreenClipboardDocument();
+    if (!ready) return false;
+    const response = await chrome.runtime.sendMessage({ action: 'offscreenWrite', text });
+    return Boolean(response && response.success);
+  } catch (_) {
+    return false;
+  }
+}
+
 async function handleMessage(request, sender) {
+  // Only accept messages from this extension's own contexts (content scripts,
+  // offscreen document). The sender.id check prevents a compromised or
+  // externally-connectable context from driving privileged actions.
+  if (!request || typeof request !== 'object') return { success: false, error: 'Bad request' };
+  if (sender && typeof sender.id === 'string' && sender.id !== (globalThis.chrome?.runtime?.id || sender.id)) {
+    return { success: false, error: 'Forbidden sender' };
+  }
   switch (request.action) {
     case 'saveComponent': {
       const result = await storageGet(['savedComponents']);
@@ -404,6 +481,7 @@ async function handleMessage(request, sender) {
         try {
           const response = await fetchWithTimeout(url, { headers: { Accept: 'text/css,*/*' } });
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          if (response.url && !isSafeRemoteUrl(response.url)) throw new Error('Unsafe redirect target');
           results[url] = { success: true, css: await expandImports(await response.text(), url) };
         } catch (error) { results[url] = { success: false, error: error.message || String(error) }; }
       }));
@@ -413,6 +491,7 @@ async function handleMessage(request, sender) {
       if (!isSafeRemoteUrl(request.url)) throw new Error('Unsupported asset URL');
       const response = await fetchWithTimeout(request.url);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (response.url && !isSafeRemoteUrl(response.url)) throw new Error('Unsafe redirect target');
       const blob = await response.blob();
       const buffer = await blob.arrayBuffer();
       const bytes = new Uint8Array(buffer);
@@ -426,17 +505,22 @@ async function handleMessage(request, sender) {
       if (!isSafeRemoteUrl(request.url) && !String(request.url || '').startsWith('data:')) throw new Error('Unsupported download URL');
       const downloadId = await chrome.downloads.download({
         url: request.url,
-        filename: request.filename || undefined,
+        filename: request.filename ? sanitizeDownloadFilename(request.filename) : undefined,
         saveAs: Boolean(request.saveAs)
       });
       return { success: true, downloadId };
     }
     case 'copyToClipboard': {
-      return { success: true };
+      const text = String(request.text ?? '');
+      if (!text) return { success: false, error: 'Nothing to copy' };
+      const copied = await copyViaOffscreenDocument(text);
+      return { success: copied };
     }
     case 'formatCode': {
       const parser = request.parser === 'css' ? 'css' : 'html';
       const code = String(request.code ?? '');
+      // Cap input size so a hostile sender can't exhaust the service worker.
+      if (code.length > 2 * 1024 * 1024) return { success: true, formatted: code };
       const prettierGlobal = (typeof globalThis !== 'undefined' && globalThis.prettier) || null;
       const pluginGlobal = (typeof globalThis !== 'undefined' && globalThis.prettierPlugins) || null;
       if (prettierGlobal && typeof prettierGlobal.format === 'function') {

@@ -72,6 +72,39 @@ test('background private IP detection rules (HIGH-09)', () => {
   assert.equal(fn.isPrivateHostname('1.1.1.1'), false);
 });
 
+test('background private IP guards block IPv6 literals and short-form IPv4 (SSRF)', () => {
+  const bgCode = fs.readFileSync(path.resolve(__dirname, '..', 'background.js'), 'utf8');
+  const mockChrome = createMockChrome();
+  const fn = new Function('chrome', `${bgCode}; return { isPrivateHostname, isSafeRemoteUrl, parseIPv4To32Bit };`)(mockChrome);
+
+  // IPv6 loopback + unique-local + link-local
+  assert.equal(fn.isPrivateHostname('[::1]'), true);
+  assert.equal(fn.isPrivateHostname('::1'), true);
+  assert.equal(fn.isPrivateHostname('[fc00::1]'), true);
+  assert.equal(fn.isPrivateHostname('[fd12:3456::1]'), true);
+  assert.equal(fn.isPrivateHostname('[fe80::1]'), true);
+
+  // Short-form IPv4 (browsers resolve these to private/loopback)
+  assert.equal(fn.isPrivateHostname('127.1'), true);   // 127.0.0.1
+  assert.equal(fn.isPrivateHostname('10.1'), true);    // 10.0.0.1
+  assert.equal(fn.isPrivateHostname('192.168.1'), true); // 192.168.0.1
+
+  // isSafeRemoteUrl rejects private and non-http(s) URLs, accepts public http(s)
+  assert.equal(fn.isSafeRemoteUrl('http://127.0.0.1/x'), false);
+  assert.equal(fn.isSafeRemoteUrl('http://[::1]/x'), false);
+  assert.equal(fn.isSafeRemoteUrl('https://8.8.8.8/x'), true);
+  assert.equal(fn.isSafeRemoteUrl('file:///etc/passwd'), false);
+  assert.equal(fn.isSafeRemoteUrl('http://user:pass@example.com/x'), false); // creds rejected
+});
+
+test('background downloadAsset sanitizes filename and formatCode caps input size', () => {
+  const bgCode = fs.readFileSync(path.resolve(__dirname, '..', 'background.js'), 'utf8');
+  assert.match(bgCode, /filename: request\.filename \? sanitizeDownloadFilename\(request\.filename\)/);
+  assert.match(bgCode, /code\.length > 2 \* 1024 \* 1024/);
+  assert.match(bgCode, /sender\.id/);
+  assert.match(bgCode, /response\.url && !isSafeRemoteUrl\(response\.url\)/);
+});
+
 test('background filename sanitizer (LOW-07, MED-05)', () => {
   const bgCode = fs.readFileSync(path.resolve(__dirname, '..', 'background.js'), 'utf8');
   const mockChrome = createMockChrome();
@@ -167,4 +200,60 @@ test('content component preview sanitizes scriptable tags and clobbering (CRIT-0
   assert.match(contentCode, /script, noscript, iframe, object, embed/);
   assert.match(contentCode, /removeAttribute/);
   assert.match(contentCode, /uicc-component-preview/);
+});
+
+test('background copyToClipboard forwards to offscreen document via offscreenWrite', async () => {
+  const bgCode = fs.readFileSync(path.resolve(__dirname, '..', 'background.js'), 'utf8');
+  assert.match(bgCode, /offscreenWrite/);
+  assert.match(bgCode, /copyViaOffscreenDocument/);
+  assert.match(bgCode, /ensureOffscreenClipboardDocument/);
+  assert.match(bgCode, /reasons: \['CLIPBOARD'\]/);
+
+  const sent = [];
+  let created = null;
+  const mockChrome = createMockChrome();
+  mockChrome.offscreen = {
+    hasDocument: async () => false,
+    createDocument: async opts => { created = opts; }
+  };
+  mockChrome.runtime.sendMessage = async msg => { sent.push(msg); return { success: true }; };
+
+  // The guard reads globalThis.chrome, so expose the mock there during the test.
+  const previousChrome = globalThis.chrome;
+  globalThis.chrome = mockChrome;
+  try {
+    const fn = new Function('chrome', `${bgCode}; return { copyViaOffscreenDocument, ensureOffscreenClipboardDocument };`)(mockChrome);
+    const ok = await fn.copyViaOffscreenDocument('hello');
+    assert.equal(ok, true);
+    assert.equal(sent.length, 1);
+    assert.deepEqual(sent[0], { action: 'offscreenWrite', text: 'hello' });
+    assert.ok(created && created.url === 'offscreen.html', 'offscreen document created with offscreen.html');
+    assert.deepEqual(created.reasons, ['CLIPBOARD']);
+    assert.ok(created.justification && created.justification.length > 0);
+  } finally {
+    if (previousChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = previousChrome;
+  }
+});
+
+test('background copyToClipboard degrades gracefully without offscreen API', async () => {
+  const bgCode = fs.readFileSync(path.resolve(__dirname, '..', 'background.js'), 'utf8');
+  const mockChrome = createMockChrome(); // no chrome.offscreen
+  const previousChrome = globalThis.chrome;
+  delete globalThis.chrome;
+  try {
+    const fn = new Function('chrome', `${bgCode}; return { copyViaOffscreenDocument };`)(mockChrome);
+    const ok = await fn.copyViaOffscreenDocument('hello');
+    assert.equal(ok, false);
+  } finally {
+    if (previousChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = previousChrome;
+  }
+});
+
+test('offscreen document only handles offscreenWrite and returns real success', () => {
+  const offCode = fs.readFileSync(path.resolve(__dirname, '..', 'offscreen.js'), 'utf8');
+  assert.match(offCode, /offscreenWrite/);
+  assert.match(offCode, /navigator\.clipboard\.writeText/);
+  assert.match(offCode, /execCommand\('copy'\)/);
 });

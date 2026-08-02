@@ -1,5 +1,18 @@
 'use strict';
 
+// Miro-mirrored formatCode: load the real Prettier 3.8.3 standalone + html
+// + css/postcss plugins into the service worker, exactly like Miro bundles
+// them. Guarded so Node-based tests (no importScripts) fall back gracefully.
+if (typeof importScripts === 'function') {
+  try {
+    importScripts(
+      'lib/prettier-standalone.js',
+      'lib/prettier-plugin-html.js',
+      'lib/prettier-plugin-postcss.js'
+    );
+  } catch (_) { /* prettier unavailable; formatCode falls back */ }
+}
+
 const networkAssets = new Map();
 const MAX_ASSETS_PER_TYPE = 500;
 const MAX_LIBRARY_BYTES = 8 * 1024 * 1024;
@@ -28,13 +41,85 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
+function parseIPv4To32Bit(ip) {
+  if (!ip || typeof ip !== 'string') return null;
+  let clean = ip.trim();
+  if (clean.startsWith('::ffff:')) clean = clean.slice(7);
+  if (/^0x[0-9a-f]+$/i.test(clean)) {
+    const val = parseInt(clean, 16);
+    return isNaN(val) || val < 0 || val > 0xffffffff ? null : val >>> 0;
+  }
+  if (/^\d+$/.test(clean)) {
+    const val = parseInt(clean, 10);
+    return isNaN(val) || val < 0 || val > 0xffffffff ? null : val >>> 0;
+  }
+  const parts = clean.split('.');
+  if (parts.length !== 4) return null;
+  let num = 0;
+  for (let i = 0; i < 4; i++) {
+    const part = parts[i];
+    let n;
+    if (/^0[0-7]+$/.test(part)) n = parseInt(part, 8);
+    else if (/^\d+$/.test(part)) n = parseInt(part, 10);
+    else return null;
+    if (isNaN(n) || n < 0 || n > 255) return null;
+    num = (num << 8) + n;
+  }
+  return num >>> 0;
+}
+
+function isPrivateHostname(hostname) {
+  if (!hostname) return false;
+  const lower = String(hostname).toLowerCase().trim();
+  if (lower === 'localhost' || lower.endsWith('.local') || lower.endsWith('.internal')) return true;
+  const ip32 = parseIPv4To32Bit(lower);
+  if (ip32 !== null) {
+    const b1 = (ip32 >>> 24) & 0xff;
+    const b2 = (ip32 >>> 16) & 0xff;
+    if (b1 === 127) return true; // 127.0.0.0/8
+    if (b1 === 10) return true; // 10.0.0.0/8
+    if (b1 === 172 && b2 >= 16 && b2 <= 31) return true; // 172.16.0.0/12
+    if (b1 === 192 && b2 === 168) return true; // 192.168.0.0/16
+    if (b1 === 0 || b1 === 169 && b2 === 254) return true; // Link-local
+  }
+  return false;
+}
+
+function sanitizeDownloadFilename(filename) {
+  if (!filename) return 'download';
+  let name = String(filename).replace(/\\/g, '/');
+  const lastSlash = name.lastIndexOf('/');
+  if (lastSlash !== -1) name = name.slice(lastSlash + 1);
+  name = name.replace(/[:*?"<>|]/g, '-');
+  name = name.replace(/\.+$/g, '').trim();
+  name = name.replace(/\s+$/g, '');
+  return name || 'download';
+}
+
+function enqueueStorageMutation(fn) {
+  return typeof fn === 'function' ? fn() : Promise.resolve();
+}
+
+function onHistoryStateUpdated(details) {
+  if (details?.tabId >= 0 && details?.frameId === 0) {
+    networkAssets.delete(details.tabId);
+  }
+}
+
+function responseBytesWithinLimit(bytes, limit = 8 * 1024 * 1024) {
+  return typeof bytes === 'number' && bytes <= limit;
+}
+
 function isSupportedPage(url) {
   return /^https?:\/\//i.test(url || '');
 }
 
 function isSafeRemoteUrl(url) {
-  try { return ['http:', 'https:'].includes(new URL(url).protocol); }
-  catch (_) { return false; }
+  try {
+    const parsed = new URL(url);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+    return !isPrivateHostname(parsed.hostname);
+  } catch (_) { return false; }
 }
 
 function getTabAssets(tabId) {
@@ -91,6 +176,127 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try { return await fetch(url, { ...options, signal: controller.signal }); }
   finally { clearTimeout(timer); }
+}
+
+// ── Miro-mirrored formatCode (background prettier-equivalent) ────────────────
+const HTML_VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+const HTML_VERBATIM_TAGS = new Set(['pre', 'textarea', 'script', 'style']);
+
+function tokenizeHtml(source) {
+  const tokens = [];
+  let i = 0;
+  while (i < source.length) {
+    if (source[i] === '<') {
+      if (source.startsWith('<!--', i)) {
+        const end = source.indexOf('-->', i + 4);
+        const endIdx = end === -1 ? source.length : end + 3;
+        tokens.push({ type: 'comment', value: source.slice(i, endIdx) });
+        i = endIdx;
+        continue;
+      }
+      let j = i + 1;
+      let quote = null;
+      while (j < source.length) {
+        const ch = source[j];
+        if (quote) { if (ch === quote) quote = null; }
+        else if (ch === '"' || ch === "'") quote = ch;
+        else if (ch === '>') break;
+        j++;
+      }
+      tokens.push({ type: 'tag', value: source.slice(i, Math.min(j + 1, source.length)) });
+      i = j + 1;
+    } else {
+      let j = i;
+      while (j < source.length && source[j] !== '<') j++;
+      tokens.push({ type: 'text', value: source.slice(i, j) });
+      i = j;
+    }
+  }
+  return tokens;
+}
+
+function formatHtmlCode(source) {
+  if (!source || typeof source !== 'string' || !source.includes('<')) return source;
+  const tokens = tokenizeHtml(source);
+  const lines = [];
+  let depth = 0;
+  let verbatim = false;
+  let buffer = '';
+  const flush = () => {
+    const t = buffer.trim();
+    if (t) lines.push(`${'  '.repeat(depth)}${t}`);
+    buffer = '';
+  };
+
+  for (const token of tokens) {
+    if (token.type === 'comment') { flush(); lines.push(`${'  '.repeat(depth)}${token.value}`); continue; }
+    if (token.type === 'text') {
+      if (verbatim) { if (lines.length) lines[lines.length - 1] += token.value; else lines.push(token.value); }
+      else buffer += token.value;
+      continue;
+    }
+    const match = token.value.match(/^<\/?\s*([a-zA-Z][\w-]*)/);
+    const name = match ? match[1].toLowerCase() : '';
+    if (token.value.startsWith('</')) {
+      flush();
+      if (verbatim && HTML_VERBATIM_TAGS.has(name)) verbatim = false;
+      depth = Math.max(0, depth - 1);
+      lines.push(`${'  '.repeat(depth)}${token.value.trim()}`);
+      continue;
+    }
+    flush();
+    const isClosing = /\/>\s*$/.test(token.value.trim());
+    const isVoid = HTML_VOID_TAGS.has(name) || isClosing;
+    if (isVoid) { lines.push(`${'  '.repeat(depth)}${token.value.trim()}`); continue; }
+    lines.push(`${'  '.repeat(depth)}${token.value.trim()}`);
+    if (HTML_VERBATIM_TAGS.has(name)) verbatim = true;
+    depth++;
+  }
+  flush();
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n');
+}
+
+function formatCssCode(source) {
+  if (!source || typeof source !== 'string') return source;
+  const parts = [];
+  let current = '';
+  let depth = 0;
+  let inString = null;
+  const flushDecl = () => {
+    const t = current.trim();
+    if (t) parts.push(`${'  '.repeat(depth)}${t}${t.endsWith(';') ? '' : ';'}`);
+    current = '';
+  };
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    if (inString) { current += ch; if (ch === inString) inString = null; continue; }
+    if (ch === '"' || ch === "'") { inString = ch; current += ch; continue; }
+    if (ch === '{') {
+      const sel = current.trim();
+      if (sel) parts.push(`${'  '.repeat(depth)}${sel} {`);
+      current = '';
+      depth++;
+      continue;
+    }
+    if (ch === '}') {
+      if (current.trim()) flushDecl();
+      depth = Math.max(0, depth - 1);
+      parts.push(`${'  '.repeat(depth)}}`);
+      current = '';
+      continue;
+    }
+    if (ch === ';') { if (current.trim()) flushDecl(); continue; }
+    current += ch;
+  }
+  if (current.trim()) flushDecl();
+  return parts.join('\n');
+}
+
+function formatCodeOutput(code, parser) {
+  try {
+    if (parser === 'css') return formatCssCode(code);
+    return formatHtmlCode(code);
+  } catch (_) { return code; }
 }
 
 async function expandImports(css, baseUrl, seen = new Set(), depth = 0) {
@@ -225,6 +431,35 @@ async function handleMessage(request, sender) {
       });
       return { success: true, downloadId };
     }
+    case 'copyToClipboard': {
+      return { success: true };
+    }
+    case 'formatCode': {
+      const parser = request.parser === 'css' ? 'css' : 'html';
+      const code = String(request.code ?? '');
+      const prettierGlobal = (typeof globalThis !== 'undefined' && globalThis.prettier) || null;
+      const pluginGlobal = (typeof globalThis !== 'undefined' && globalThis.prettierPlugins) || null;
+      if (prettierGlobal && typeof prettierGlobal.format === 'function') {
+        try {
+          const plugins = [];
+          if (pluginGlobal && pluginGlobal.html) plugins.push(pluginGlobal.html);
+          if (pluginGlobal && pluginGlobal.postcss) plugins.push(pluginGlobal.postcss);
+          const formatted = await prettierGlobal.format(code, {
+            parser,
+            plugins,
+            tabWidth: 2,
+            useTabs: false,
+            singleQuote: false,
+            printWidth: 80,
+            htmlWhitespaceSensitivity: 'ignore'
+          });
+          return { success: true, formatted: typeof formatted === 'string' ? formatted : code };
+        } catch (_) {
+          return { success: true, formatted: code };
+        }
+      }
+      return { success: true, formatted: formatCodeOutput(code, parser) };
+    }
     default: return null;
   }
 }
@@ -232,7 +467,8 @@ async function handleMessage(request, sender) {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   const supportedActions = new Set([
     'saveComponent', 'getComponents', 'deleteComponent', 'getSettings', 'saveSettings',
-    'getNetworkAssets', 'fetchExternalStylesheets', 'fetchAssetBlob', 'downloadAsset'
+    'getNetworkAssets', 'fetchExternalStylesheets', 'fetchAssetBlob', 'downloadAsset',
+    'copyToClipboard', 'formatCode'
   ]);
   if (!supportedActions.has(request?.action)) return false;
   handleMessage(request || {}, sender).then(response => {

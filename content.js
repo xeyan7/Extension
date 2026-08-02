@@ -1326,8 +1326,12 @@
 
         <div class="uicc-component-preview">
           <div class="uicc-element-type">
-            <span class="uicc-element-type-badge">${elementType}</span>
-            <span style="font-size:11px;color:#a1a1aa;margin-left:auto;">${Math.round(element.offsetWidth)} × ${Math.round(element.offsetHeight)} px</span>
+            <div class="uicc-element-type-label">Element Type</div>
+            <div class="uicc-element-type-title">
+              <span class="uicc-element-type-badge">${elementType}</span>
+              <span class="uicc-dim-badge">${Math.round(element.offsetWidth)} × ${Math.round(element.offsetHeight)} px</span>
+            </div>
+            <div class="uicc-element-selector">${this.escapeHtml(this.getSimplifiedSelector(element))}</div>
           </div>
           ${previewContainerHtml}
         </div>
@@ -1490,6 +1494,19 @@
       return tag.toUpperCase();
     }
 
+    // ── Miro-exact simplified selector (n in ki()): tag#id.first-class ──────
+    getSimplifiedSelector(element) {
+      if (!element) return 'element';
+      const tag = element.tagName ? element.tagName.toLowerCase() : 'div';
+      const id = element.id ? `#${element.id}` : '';
+      let cls = '';
+      if (element.className && typeof element.className === 'string') {
+        const classes = element.className.trim().split(/\s+/).filter(Boolean);
+        if (classes.length) cls = '.' + classes.slice(0, 2).join('.');
+      }
+      return `${tag}${id}${cls}`;
+    }
+
     createComponentPreview(element) {
       try {
         const clone = element.cloneNode(true);
@@ -1524,53 +1541,68 @@
         const origElements = [element, ...element.querySelectorAll('*')];
         const cloneElements = [clone, ...clone.querySelectorAll('*')];
 
-        // CRITICAL: Properties that MUST be captured for exact styling
+        // Miro's exact property list, plus box-sizing + the webkit background-
+        // clip props (needed so gradient-clipped / fill-colour text keeps its
+        // colour in the preview).
         const propsToExtract = [
-          "display","position","top","right","bottom","left","z-index",
+          "display","box-sizing","position","top","right","bottom","left","z-index",
           "width","height","min-width","min-height","max-width","max-height",
           "margin","margin-top","margin-right","margin-bottom","margin-left",
           "padding","padding-top","padding-right","padding-bottom","padding-left",
           "flex-direction","flex-wrap","flex-grow","flex-shrink","flex-basis",
           "align-items","align-self","justify-content","gap","row-gap","column-gap",
-          "grid-template-columns","grid-template-rows","grid-column","grid-row","grid-auto-flow",
+          "grid-template-columns","grid-template-rows","grid-column","grid-row",
           "overflow","overflow-x","overflow-y",
           "color","background","background-color","background-image","background-size",
-          "background-position","background-repeat","background-attachment",
+          "background-position","background-repeat","background-clip",
+          "-webkit-background-clip","-webkit-text-fill-color",
           "font-family","font-size","font-weight","font-style","line-height",
-          "letter-spacing","word-spacing","text-align","text-transform","text-decoration",
-          "white-space","word-break","text-overflow","text-indent","vertical-align",
+          "letter-spacing","text-align","text-transform","text-decoration",
+          "white-space","word-break","text-overflow",
           "border","border-width","border-style","border-color","border-radius",
-          "border-top","border-right","border-bottom","border-left",
           "border-top-left-radius","border-top-right-radius",
           "border-bottom-left-radius","border-bottom-right-radius",
           "box-shadow","opacity","transform","transition","cursor","pointer-events",
           "visibility","object-fit","object-position","aspect-ratio","isolation",
           "mix-blend-mode","filter","backdrop-filter","outline","outline-offset",
-          "list-style-type","list-style-position","table-layout","border-collapse",
-          "border-spacing","fill","stroke","stroke-width"
+          "text-indent","vertical-align","list-style-type","table-layout",
+          "border-collapse","border-spacing","fill","stroke","stroke-width"
         ];
 
-        // Apply computed styles as inline styles with !important
+        // Miro's exact defaults map: values equal to these are NOT baked in, so
+        // the preview iframe's reset (box-sizing, flex-shrink on body > *, etc.)
+        // stays in effect for them — instead of being forced to a default value
+        // that fights the reset and breaks alignment.
+        const defaults = {
+          position: "static", top: "auto", right: "auto", bottom: "auto", left: "auto",
+          "z-index": "auto", "min-width": "0px", "min-height": "0px", "max-width": "none",
+          "max-height": "none", "flex-grow": "0", "flex-shrink": "1", "flex-basis": "auto",
+          overflow: "visible", "overflow-x": "visible", "overflow-y": "visible",
+          transform: "none", filter: "none", "backdrop-filter": "none", opacity: "1",
+          visibility: "visible", cursor: "auto", "pointer-events": "auto", isolation: "auto",
+          "mix-blend-mode": "normal", "box-shadow": "none", "text-transform": "none",
+          "text-decoration": "none", "text-indent": "0px", outline: "", "outline-offset": "0px",
+          "object-fit": "fill", "aspect-ratio": "auto", "white-space": "normal",
+          "word-break": "normal", "text-overflow": "clip", "border-collapse": "separate",
+          "table-layout": "auto", fill: "", stroke: "none", "stroke-width": "1"
+        };
+
+        // Miro's exact application: plain `prop:value` pairs (NO !important),
+        // appended to any existing inline style. Skipping defaults + the
+        // extension's own outline colour (#6366F1 = rgb(99, 102, 241)) means the
+        // iframe reset wins for default values while meaningful styles are baked in.
         for (let s = 0; s < origElements.length && s < cloneElements.length; s++) {
-          const origEl = origElements[s];
-          const cloneEl = cloneElements[s];
-          const computedStyle = window.getComputedStyle(origEl);
-          
-          // Apply each property using setProperty with !important
+          const computedStyle = window.getComputedStyle(origElements[s]);
+          const styles = [];
           for (const prop of propsToExtract) {
             const value = computedStyle.getPropertyValue(prop);
-            
-            // Skip only truly empty values or extension's own outline
-            if (!value || value === "" || (prop === "outline" && value.includes("63, 102, 241"))) continue;
-            
-            // CRITICAL: Apply with !important to ensure it's not overridden
-            try {
-              cloneEl.style.setProperty(prop, value, 'important');
-            } catch(e) {
-              // Fallback to setAttribute if setProperty fails
-              const currentStyle = cloneEl.getAttribute("style") || "";
-              cloneEl.setAttribute("style", currentStyle + (currentStyle ? ";" : "") + `${prop}:${value} !important`);
-            }
+            if (!value || value === "" || value === defaults[prop]) continue;
+            if (prop === "outline" && value.includes("99, 102, 241")) continue;
+            styles.push(`${prop}:${value}`);
+          }
+          if (styles.length > 0) {
+            const existing = cloneElements[s].getAttribute("style") || "";
+            cloneElements[s].setAttribute("style", existing + (existing ? ";" : "") + styles.join(";"));
           }
         }
 
@@ -1611,26 +1643,58 @@
       } catch(e) {}
 
       let html = '', css = '';
-      
-      // ALWAYS use getComputedStyleSnapshot for preview to ensure exact styling
-      // This applies all computed styles as inline styles, preserving fonts, colors, and layout
-      try {
-        const snapshot = this.getComputedStyleSnapshot(element);
-        html = snapshot.html || element.outerHTML;
-        css = snapshot.css || '';
-      } catch(e) {
-        console.warn('UI Copier: getComputedStyleSnapshot failed, trying extraction fallback', e);
+
+      // ── Miro Xe() orchestration (lib/preview.js) ─────────────────────────
+      // The exact Miro preview pipeline: clean clone (hn) + full-page scoped CSS
+      // (xn) with the computed-style snapshot (getComputedStyleSnapshot) swapped
+      // in when the page uses Tailwind (dn). This is what makes the preview
+      // match Miro's — backgrounds, webfonts, inherited typography, media
+      // queries, and keyframes all render identically.
+      if (globalThis.UICCPreview && typeof globalThis.UICCPreview.buildPreviewForElement === 'function') {
         try {
-          const extracted = await this.getExtraction(element);
-          if (extracted && extracted.html) {
-            html = extracted.html;
-            css = extracted.css || '';
+          await loadPostcss();
+          const preview = await globalThis.UICCPreview.buildPreviewForElement(element);
+          if (preview && typeof preview.html === 'string' && preview.html) {
+            html = preview.html;
+            css = preview.css || '';
           }
-        } catch(e2) {
-          console.warn('UI Copier: all preview methods failed', e2);
-          html = element.outerHTML;
-          css = '';
+        } catch (e) {
+          console.warn('UI Copier: Miro preview pipeline failed, falling back to extraction', e);
         }
+      }
+
+      // Fallback: previous best-effort extraction + computed-style snapshot.
+      if (!html) {
+        // Miro Gc flow (full preview workflow copied from Miro):
+        //   - The extracted CSS is ALWAYS kept in the preview (Miro: a = o.css, or
+        //     a = d.css || o.css for Tailwind). It carries the element's background
+        //     rules and @font-face / webfonts — without it the iframe shows a
+        //     transparent background and webfont text can fail to render (missing).
+        //   - The computed-style snapshot is then layered on top, baking in exact
+        //     inline styles so alignment, colors, and widths match the original.
+        let extracted = null;
+        try {
+          extracted = await this.getExtraction(element).catch(() => null);
+          if (extracted && extracted.css) css = extracted.css;
+        } catch (e) { /* non-fatal - css is best-effort */ }
+
+        try {
+          const snapshot = this.getComputedStyleSnapshot(element);
+          html = (snapshot && snapshot.html) || (extracted && extracted.html) || element.outerHTML;
+        } catch (e) {
+          console.warn('UI Copier: getComputedStyleSnapshot failed, falling back to extraction', e);
+          if (extracted && extracted.html) html = extracted.html;
+          if (!html) html = element.outerHTML;
+        }
+      }
+
+      // ── Miro-mirrored preview module (lib/preview.js) ────────────────────
+      // Prefer the UICCPreview loader (exact Miro Gc port: minimal-reset doc +
+      // 150ms auto-scale with zoom clamp). The inline template below remains as
+      // the fallback path when the module is unavailable.
+      if (globalThis.UICCPreview && typeof globalThis.UICCPreview.writePreviewToIframe === 'function') {
+        globalThis.UICCPreview.writePreviewToIframe(iframe, html, css);
+        return;
       }
 
       // Miro's EXACT iframe template with minimal reset
@@ -1792,6 +1856,16 @@ ${html}
       }
       await loadPostcss();
       const result = await this.extractor.extract(element);
+      // Miro-mirrored (Fn): attach a standalone preview document to extraction
+      // results exactly like the Miro extension's Xe() returns `preview`.
+      if (result && typeof result.html === 'string' && globalThis.UICCPreview &&
+          typeof globalThis.UICCPreview.buildPreviewDocument === 'function') {
+        try {
+          result.preview = globalThis.UICCPreview.buildPreviewDocument(
+            result.html, result.css || '', [], false
+          );
+        } catch (_) { /* additive - never fail extraction over preview */ }
+      }
       this._lastExtraction = { element, result };
       return result;
     }

@@ -10,7 +10,8 @@
     "webRequest",
     "webNavigation",
     "downloads",
-    "tabs"
+    "tabs",
+    "clipboardWrite"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -27,7 +28,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["lib/gsap.min.js", "lib/tailwind-lib.js", "lib/extractor.js", "content.js"],
+      "js": ["lib/gsap.min.js", "lib/tailwind-lib.js", "lib/extractor.js", "lib/preview.js", "content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
     }

@@ -28,16 +28,31 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["lib/gsap.min.js", "lib/tailwind-lib.js", "lib/extractor.js", "lib/preview.js", "content.js"],
-      "css": ["content.css"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "lib/gsap.min.js",
+        "lib/tailwind-lib.js",
+        "lib/miro_core.js",
+        "lib/extractor.js",
+        "lib/preview.js",
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
       "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [
     {
-      "matches": ["<all_urls>"],
-      "resources": ["lib/postcss.js"]
+      "matches": [
+        "<all_urls>"
+      ],
+      "resources": [
+        "lib/postcss.js"
+      ]
     }
   ],
   "background": {

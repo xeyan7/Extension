@@ -571,7 +571,7 @@ chrome.action.onClicked.addListener(async tab => {
     await chrome.scripting.insertCSS({ target: { tabId: tab.id }, files: ['content.css'] });
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      files: ['lib/gsap.min.js', 'lib/tailwind-lib.js', 'lib/extractor.js', 'content.js']
+      files: ['lib/gsap.min.js', 'lib/tailwind-lib.js', 'lib/miro_core.js', 'lib/extractor.js', 'lib/preview.js', 'content.js']
     });
   } catch (error) {
     console.warn('UI Component Copier could not run on this page:', error.message || error);

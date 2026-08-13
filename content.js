@@ -636,10 +636,7 @@
 
     // ── Pr: create the frosted-glass preview panel (J) ───────────────────────
     _miroCreatePreviewPanel() {
-      if (this._inspectOverlay) {
-        this._inspectOverlay.style.display = 'block';
-        return;
-      }
+      if (this._inspectOverlay) return;
       const el = document.createElement('div');
       el.id = 'uicc-inspector-overlay';
       el.style.cssText = `
@@ -730,16 +727,53 @@
       this._inspectCoordLabel.textContent = `${Math.round(x + window.scrollX)}, ${Math.round(y + window.scrollY)}`;
     }
 
-    // ── Le: add outline class to element ─────────────────────────────────────
-    _miroAddOutline(el) {
-      this._miroRemoveOutline();
-      el.classList.add(this._inspectHighlightClass);
+    // ── Super Design selection box (one-to-one: $e + M) ──────────────────────
+    _miroGetSelectionBox() {
+      let box = document.getElementById('sd-component-inspector');
+      if (!box) {
+        box = document.createElement('div');
+        box.id = 'sd-component-inspector';
+        document.body.appendChild(box);
+      }
+      return box;
     }
 
-    // ── Ge: remove outline class from any element ─────────────────────────────
+    // ── Le: show the Super Design selection box over the element ────────────
+    //    base styling comes from content.css `#sd-component-inspector`
+    //    (all:initial; fixed; 2px solid #2d8a68; soft green fill; 0.15s ease-out;
+    //    z-index 9999999). Geometry follows the element, radius matches it.
+    _miroAddOutline(el, locked = false) {
+      if (!el || !el.isConnected) return;
+      const box = this._miroGetSelectionBox();
+      const rect = el.getBoundingClientRect();
+      box.style.display = 'block';
+      box.classList.add('active');
+      box.style.top    = rect.top + 'px';
+      box.style.left   = rect.left + 'px';
+      box.style.width  = rect.width + 'px';
+      box.style.height = rect.height + 'px';
+      box.style.borderRadius = getComputedStyle(el).borderRadius;
+      box.classList.toggle('locked', !!locked);
+      if (!document.getElementById('sd-pulse-animation')) {
+        const style = document.createElement('style');
+        style.id = 'sd-pulse-animation';
+        style.textContent = `
+          @keyframes sd-pulse-shadow {
+            0%, 100% { box-shadow: 0 0 0 2px rgba(45, 138, 104, 0.15) !important; }
+            50% { box-shadow: 0 0 0 2px rgba(45, 138, 104, 0.5) !important; }
+          }
+        `;
+        document.head.appendChild(style);
+      }
+    }
+
+    // ── Ge: hide the Super Design selection box ─────────────────────────────
     _miroRemoveOutline() {
-      const existing = document.querySelector('.' + this._inspectHighlightClass);
-      if (existing) existing.classList.remove(this._inspectHighlightClass);
+      const box = document.getElementById('sd-component-inspector');
+      if (box) {
+        box.classList.remove('active', 'locked');
+        box.style.display = 'none';
+      }
     }
 
     // ── Me: draw guidelines SVG lines in the absolute guidelines div ──────────
@@ -962,13 +996,12 @@
     }
 
     // ── qr: set hovered element and update all visuals ───────────────────────
-    _miroSetHovered(el) {
+_miroSetHovered(el) {
       this.currentElement = el;
       this._miroAddOutline(el);
       this._miroDrawGuidelines(el);
       this._miroDrawBoxModel(el);
-      this._miroRenderPreviewPanel(el);
-      this.renderHoverElementInfo(el);  // also update the toolbar panel
+      this.renderHoverElementInfo(el);  // updates the toolbar panel only
     }
 
     // ── Hr: clear hover state ─────────────────────────────────────────────────
@@ -1028,12 +1061,11 @@
       this.currentElement = null;
     }
 
-    // ── Ct: mousemove handler — updates pointer coords and coord label ────────
+    // ── Ct: mousemove handler — updates pointer coords ─────────────────────────
     _miroOnMousemove = (e) => {
       if (!this.isSelectionMode) return;
       this.pointerX = e.clientX;
       this.pointerY = e.clientY;
-      this._miroUpdateCoordLabel(e.clientX, e.clientY);
     }
 
     // ── vt: click handler ─────────────────────────────────────────────────────
@@ -1092,7 +1124,6 @@
       this._miroInjectHighlightStyle();
       this._miroCreatePreviewPanel();
       this._miroCreateGuidelines();
-      this._miroCreateCoordLabel();
 
       document.addEventListener('mouseover', this._miroOnMouseover, true);
       document.addEventListener('mouseout',  this._miroOnMouseout,  true);
@@ -1101,7 +1132,7 @@
       document.addEventListener('keydown',   this._miroOnKeydown,   true);
       window.addEventListener('scroll',      this.onViewportChange, true);
       window.addEventListener('resize',      this.onViewportChange, true);
-      if (document.body) document.body.style.cursor = 'crosshair';
+      if (document.body) document.body.style.cursor = 'url("data:image/svg+xml,%3Csvg%20xmlns%3D\'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg\'%20width%3D\'28\'%20height%3D\'28\'%20viewBox%3D\'0%200%2028%2028\'%3E%3Cdefs%3E%3Cfilter%20id%3D\'g\'%20x%3D\'-50%25\'%20y%3D\'-50%25\'%20width%3D\'200%25\'%20height%3D\'200%25\'%3E%3CfeDropShadow%20dx%3D\'0\'%20dy%3D\'0\'%20stdDeviation%3D\'1.6\'%20flood-color%3D\'%23ffffff\'%20flood-opacity%3D\'0.9\'%2F%3E%3C%2Ffilter%3E%3C%2Fdefs%3E%3Cg%20filter%3D\'url(%23g)\'%20fill%3D\'none\'%20stroke%3D\'%23191a17\'%20stroke-width%3D\'2.2\'%20stroke-linecap%3D\'round\'%3E%3Cpath%20d%3D\'M14%205%20v18\'%2F%3E%3Cpath%20d%3D\'M5%2014%20h18\'%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E") 14 14, crosshair';
     }
 
     // ── Et: stop inspector ────────────────────────────────────────────────────
@@ -1140,7 +1171,6 @@
         if (!this.isSelectionMode || !this.currentElement?.isConnected) return;
         this._miroDrawGuidelines(this.currentElement);
         this._miroDrawBoxModel(this.currentElement);
-        this._miroRenderPreviewPanel(this.currentElement);
       });
     }
 
@@ -1173,7 +1203,7 @@
 
     highlightElement(element) {
       if (element && element.isConnected) {
-        this._miroAddOutline(element);
+        this._miroAddOutline(element, true);
       }
     }
 

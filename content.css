@@ -338,18 +338,6 @@
   font-size: 20px;
   font-weight: 700;
 }
-.uicc-element-selector {
-  display: inline-block;
-  max-width: 100%;
-  padding: 6px 10px;
-  overflow: hidden;
-  color: #818CF8;
-  background: #f3f4f6;
-  border-radius: 6px;
-  font: 600 13px var(--uicc-mono);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .uicc-dim-badge,
 .uicc-component-dimensions {
   margin-left: auto;
@@ -370,31 +358,6 @@
 .uicc-color-dot { display: inline-block; width: 9px; height: 9px; margin-right: 4px; border: 1px solid var(--uicc-line-strong); border-radius: 2px; }
 .uicc-hover-cta { margin-top: 9px; padding-top: 8px; color: var(--uicc-accent); border-top: 1px solid var(--uicc-line); font-size: 11px; }
 
-.uicc-breadcrumb {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 3px;
-  margin-bottom: 10px;
-  font-family: var(--uicc-mono);
-}
-
-.uicc-breadcrumb-item {
-  max-width: 180px;
-  padding: 3px 5px;
-  overflow: hidden;
-  color: var(--uicc-ink-soft);
-  background: transparent;
-  border: 0;
-  border-radius: 4px;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.uicc-breadcrumb-item:hover { color: var(--uicc-ink); background: var(--uicc-paper-soft); }
-.uicc-breadcrumb-item.active { color: var(--uicc-accent); background: var(--uicc-accent-soft); }
-.uicc-breadcrumb-separator { color: var(--uicc-line-strong); }
 .uicc-component-preview-container {
   position: relative;
   border-radius: 10px 10px 0 0;
@@ -656,6 +619,15 @@ body.uicc-selection-active { cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D'h
   0%, 100% { box-shadow: 0 0 0 2px rgba(45, 138, 104, 0.15) !important; }
   50% { box-shadow: 0 0 0 2px rgba(45, 138, 104, 0.5) !important; }
 }
+
+/* ── Mirror Mirror `.asset-inspector-editing` – persistent selected outline ──
+   Applied directly to the selected element only, so it wraps around the
+   element (behind its content) instead of covering it like the hover box. */
+.uicc-inspector-selected {
+  outline: 1.5px dashed #315d4c !important;
+  outline-offset: 2px !important;
+}
+
 .uicc-guidelines { position: absolute; top: 0; left: 0; z-index: var(--uicc-layer-guide); width: 100%; pointer-events: none; }
 
 @media (max-width: 520px) {

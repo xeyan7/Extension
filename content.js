@@ -91,6 +91,7 @@
       this._inspectCoordLabel = null;     // Z  – coordinate pill that follows cursor
       this._inspectGuidelinesEl = null;   // q  – absolute div for SVG lines + box model
       this._inspectHighlightClass = 'uicc-inspector-outline'; // Fe
+      this._inspectSelectedClass = 'uicc-inspector-selected'; // Miro asset-inspector-editing (persistent selected outline)
       // ────────────────────────────────────────────────────────────────────────
 
       this.init();
@@ -619,7 +620,7 @@
       this._inspectHighlightStyle.id = 'uicc-inspector-highlight-style';
       this._inspectHighlightStyle.textContent = `
         .${this._inspectHighlightClass} {
-          outline: 2px solid #6366F1 !important;
+          outline: 2px solid #315d4c !important;
           outline-offset: 2px !important;
         }
       `;
@@ -776,6 +777,19 @@
       }
     }
 
+    // ── St: apply the persistent "selected" outline (Miro asset-inspector-editing) ──
+    _miroApplySelectedOutline(el) {
+      if (!el || el.nodeType !== 1) return;
+      this._miroRemoveSelectedOutline();
+      el.classList.add(this._inspectSelectedClass);
+    }
+
+    // ── kt: remove the persistent "selected" outline from any element ────────
+    _miroRemoveSelectedOutline() {
+      document.querySelectorAll('.' + this._inspectSelectedClass)
+        .forEach(n => n.classList.remove(this._inspectSelectedClass));
+    }
+
     // ── Me: draw guidelines SVG lines in the absolute guidelines div ──────────
     _miroDrawGuidelines(el) {
       const q = this._inspectGuidelinesEl;
@@ -893,7 +907,7 @@
       const cs = window.getComputedStyle(el);
       const bgInfo = this.getBackgroundInfo(el);
       const info = {
-        tagName:               el.tagName.toLowerCase(),
+        type:                  this.getElementType(el),
         color:                 cs.color,
         backgroundColor:       bgInfo.value,
         backgroundIsGradient:  bgInfo.isGradient,
@@ -923,7 +937,7 @@
       // ── Miro's exact HTML template (c variable) ──
       let c = `
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
-          <span style="font-weight:600;color:#4F46E5;font-size:12px;background:rgba(99,102,241,0.10);border:1px solid rgba(99,102,241,0.20);border-radius:6px;padding:2px 8px;">&lt;${info.tagName}&gt;</span>
+          <span style="font-weight:600;color:#4F46E5;font-size:12px;background:rgba(99,102,241,0.10);border:1px solid rgba(99,102,241,0.20);border-radius:6px;padding:2px 8px;">${info.type}</span>
           <span style="font-size:11px;color:rgba(60,60,67,0.5);font-variant-numeric:tabular-nums;">${Math.round(el.offsetWidth)} \xD7 ${Math.round(el.offsetHeight)}</span>
         </div>
       `;
@@ -941,7 +955,7 @@
       c += '</div>';
 
       if (hasText) {
-        const fontName = info.fontFamily.split(',')[0].replace(/['"]/g, '').trim();
+        const fontName = this.simplifyFontFamily(info.fontFamily);
         c += `
           <div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid rgba(0,0,0,0.06);">
             ${n('Font')}
@@ -1063,6 +1077,7 @@ _miroSetHovered(el) {
       this.selectedElement = el;
       this._lastExtraction = null;
       this.exitSelectionMode();
+      this._miroApplySelectedOutline(this.selectedElement);
       this.setActiveButton('selector');
       this.showSelectedComponent();
     }
@@ -1137,6 +1152,7 @@ _miroSetHovered(el) {
       // Miro: hide panel, remove outline, hide guidelines + coord label
       if (this._inspectOverlay)       { this._inspectOverlay.style.display = 'none'; }
       this._miroRemoveOutline();
+      this._miroRemoveSelectedOutline();
       this._miroRemoveHighlightStyle();
       if (this._inspectGuidelinesEl)  { this._inspectGuidelinesEl.style.display = 'none'; this._inspectGuidelinesEl.innerHTML = ''; }
       if (this._inspectCoordLabel)    { this._inspectCoordLabel.style.display = 'none'; }
@@ -1146,6 +1162,9 @@ _miroSetHovered(el) {
     }
 
     // ── onViewportChange: re-draw on scroll/resize ────────────────────────────
+    // Mirrors Miro's behavior: the hover outline stays glued to the element as
+    // the page scrolls (Miro applies the outline class to the element itself;
+    // we redraw our fixed box to the element's new viewport rect instead).
     _viewportRafId = null;
     onViewportChange = () => {
       if (!this.isSelectionMode || !this.currentElement?.isConnected) return;
@@ -1153,6 +1172,7 @@ _miroSetHovered(el) {
       this._viewportRafId = requestAnimationFrame(() => {
         this._viewportRafId = null;
         if (!this.isSelectionMode || !this.currentElement?.isConnected) return;
+        this._miroAddOutline(this.currentElement);
         this._miroDrawGuidelines(this.currentElement);
         this._miroDrawBoxModel(this.currentElement);
       });
@@ -1240,18 +1260,18 @@ _miroSetHovered(el) {
       const cs = window.getComputedStyle(el);
       const bg = this.getBackgroundInfo(el);
       const hasText = el.textContent && el.textContent.trim().length > 0;
-      const font = this.escapeHtml(cs.fontFamily.split(',')[0].replace(/["']/g, '').trim());
+      const font = this.escapeHtml(this.simplifyFontFamily(cs.fontFamily));
 
       contentEl.innerHTML = `
         <div class="uicc-hover-preview">
           <div class="uicc-hover-header">
-            <span class="uicc-tag-badge">&lt;${el.tagName.toLowerCase()}&gt;</span>
+            <span class="uicc-tag-badge">${this.getElementType(el)}</span>
             <span class="uicc-dim-badge">${Math.round(el.offsetWidth)} \xD7 ${Math.round(el.offsetHeight)} px</span>
           </div>
           <div class="uicc-hover-specs">
             <div class="uicc-spec-row">
-              <span class="uicc-spec-label">Class</span>
-              <span class="uicc-spec-val" style="font-family:monospace;">${el.className && typeof el.className === 'string' ? this.escapeHtml(el.className.split(/\s+/)[0] || 'none') : 'none'}</span>
+              <span class="uicc-spec-label">Type</span>
+              <span class="uicc-spec-val">${this.getElementType(el)}</span>
             </div>
             ${hasText ? `
               <div class="uicc-spec-row">
@@ -1273,26 +1293,6 @@ _miroSetHovered(el) {
       `;
     }
 
-    getBreadcrumbTrail(element) {
-      const trail = [];
-      let curr = element;
-      while (curr && curr !== document.body && curr !== document.documentElement) {
-        if (!this.isOwnUI(curr)) {
-          const tag = curr.tagName.toLowerCase();
-          const id = curr.id ? `#${curr.id}` : '';
-          const cls = curr.className && typeof curr.className === 'string'
-            ? `.${curr.className.trim().split(/\s+/)[0]}`
-            : '';
-          trail.unshift({
-            element: curr,
-            label: `${tag}${id}${cls}`
-          });
-        }
-        curr = curr.parentElement;
-      }
-      return trail;
-    }
-
     showSelectedComponent() {
       if (!this.selectedElement) return;
 
@@ -1302,7 +1302,6 @@ _miroSetHovered(el) {
       const styles = window.getComputedStyle(element);
       const elementType = this.getElementType(element);
       const properties = this.extractProperties(element, styles);
-      const breadcrumbs = this.getBreadcrumbTrail(element);
 
       const tag = element.tagName.toLowerCase();
       const isMedia = tag === 'img' || tag === 'video' || tag === 'svg' || tag === 'canvas';
@@ -1331,15 +1330,6 @@ _miroSetHovered(el) {
       }
 
       const content = `
-        <div class="uicc-breadcrumb">
-          ${breadcrumbs.map((item, idx) => `
-            <button class="uicc-breadcrumb-item ${idx === breadcrumbs.length - 1 ? 'active' : ''}" data-breadcrumb-idx="${idx}">
-              ${this.escapeHtml(item.label)}
-            </button>
-            ${idx < breadcrumbs.length - 1 ? '<span style="color:#52525b;">›</span>' : ''}
-          `).join('')}
-        </div>
-
         <div class="uicc-component-preview">
           <div class="uicc-element-type">
             <div class="uicc-element-type-label">Element Type</div>
@@ -1347,7 +1337,6 @@ _miroSetHovered(el) {
               <span class="uicc-element-type-badge">${elementType}</span>
               <span class="uicc-dim-badge">${Math.round(element.offsetWidth)} × ${Math.round(element.offsetHeight)} px</span>
             </div>
-            <div class="uicc-element-selector">${this.escapeHtml(this.getSimplifiedSelector(element))}</div>
           </div>
           ${previewContainerHtml}
         </div>
@@ -1416,18 +1405,6 @@ _miroSetHovered(el) {
         });
       }
 
-      this.toolbar.querySelectorAll('.uicc-breadcrumb-item').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const idx = parseInt(btn.dataset.breadcrumbIdx, 10);
-          if (breadcrumbs[idx] && breadcrumbs[idx].element) {
-            this.selectedElement = breadcrumbs[idx].element;
-            this._lastExtraction = null;
-            this.highlightElement(this.selectedElement);
-            this.showSelectedComponent();
-          }
-        });
-      });
-
       this.toolbar.querySelectorAll('.uicc-copy-btn').forEach(btn => {
         btn.addEventListener('click', async () => {
           if (btn.disabled) return;
@@ -1494,6 +1471,18 @@ _miroSetHovered(el) {
       });
     }
 
+    isTextLike(element) {
+      if (!element) return false;
+      const tag = element.tagName.toLowerCase();
+      if (['span', 'p', 'a', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'em', 'strong', 'b', 'i', 'label', 'small', 'li', 'td', 'th', 'figcaption', 'blockquote', 'code'].includes(tag)) return true;
+      const text = (element.textContent || '').trim();
+      const structuredChildren = [...element.children].filter(c => {
+        const t = c.tagName.toLowerCase();
+        return !['span', 'b', 'i', 'em', 'strong', 'a', 'br', 'code'].includes(t);
+      });
+      return text.length > 0 && structuredChildren.length === 0;
+    }
+
     getElementType(element) {
       const tag = element.tagName.toLowerCase();
       const className = (element.getAttribute('class') || '').toLowerCase();
@@ -1504,23 +1493,36 @@ _miroSetHovered(el) {
       if (tag === 'form' || className.includes('form')) return 'Form';
       if (className.includes('card')) return 'Card';
       if (className.includes('hero')) return 'Hero';
-      if (tag === 'svg') return 'SVG';
+      if (tag === 'svg') return 'Icon';
       if (tag === 'img') return 'Image';
+      if (tag === 'video') return 'Video';
+      if (tag === 'input' || tag === 'select' || tag === 'textarea') return 'Input';
       if (tag === 'section' || className.includes('section')) return 'Section';
-      return tag.toUpperCase();
+      return this.isTextLike(element) ? 'Text' : 'Component';
     }
 
-    // ── Miro-exact simplified selector (n in ki()): tag#id.first-class ──────
-    getSimplifiedSelector(element) {
-      if (!element) return 'element';
-      const tag = element.tagName ? element.tagName.toLowerCase() : 'div';
-      const id = element.id ? `#${element.id}` : '';
-      let cls = '';
-      if (element.className && typeof element.className === 'string') {
-        const classes = element.className.trim().split(/\s+/).filter(Boolean);
-        if (classes.length) cls = '.' + classes.slice(0, 2).join('.');
+    describeElement(element) {
+      if (!element) return 'none';
+      const type = this.getElementType(element);
+      if (type === 'Text') {
+        const text = (element.textContent || '').trim().replace(/\s+/g, ' ');
+        if (text) return text.length > 28 ? text.slice(0, 28) + '…' : text;
       }
-      return `${tag}${id}${cls}`;
+      return type;
+    }
+
+    simplifyFontFamily(fontFamily) {
+      if (!fontFamily) return 'Default';
+      const names = fontFamily.split(',').map(n => n.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+      const first = (names[0] || '').toLowerCase();
+      const systemStacks = ['-apple-system', 'blinkmacsystemfont', 'segoe ui', 'system-ui', 'ubuntu', 'roboto', 'arial', 'helvetica', 'helvetica neue', 'verdana', 'geneva', 'tahoma', 'trebuchet ms', 'candara', 'gill sans', 'pt sans', 'lucida grande', 'sans-serif', 'serif', 'monospace'];
+      if (systemStacks.includes(first)) {
+        if (/mono|consolas|courier/.test(first)) return 'Monospace';
+        if (/serif/.test(first) && !/sans/.test(first)) return 'Serif';
+        if (/sans|system|apple|arial|helvetica|roboto|ubuntu/.test(first)) return 'Sans-serif';
+        return 'System';
+      }
+      return names[0] || 'Default';
     }
 
     createComponentPreview(element) {
@@ -1563,6 +1565,7 @@ _miroSetHovered(el) {
             else if (['href', 'src', 'action', 'formaction', 'data', 'xlink:href'].includes(name) &&
                 /^(?:javascript|vbscript):/i.test(attr.value.trim())) node.removeAttribute(attr.name);
           }
+          if (node.classList) node.classList.remove(this._inspectSelectedClass);
         }
 
         const origElements = [element, ...element.querySelectorAll('*')];
@@ -1616,7 +1619,7 @@ _miroSetHovered(el) {
 
         // Miro's exact application: plain `prop:value` pairs (NO !important),
         // appended to any existing inline style. Skipping defaults + the
-        // extension's own outline colour (#6366F1 = rgb(99, 102, 241)) means the
+        // extension's own outline colour (#315d4c = rgb(49, 93, 76)) means the
         // iframe reset wins for default values while meaningful styles are baked in.
         for (let s = 0; s < origElements.length && s < cloneElements.length; s++) {
           const computedStyle = window.getComputedStyle(origElements[s]);
@@ -1624,7 +1627,8 @@ _miroSetHovered(el) {
           for (const prop of propsToExtract) {
             const value = computedStyle.getPropertyValue(prop);
             if (!value || value === "" || value === defaults[prop]) continue;
-            if (prop === "outline" && value.includes("99, 102, 241")) continue;
+            if (prop === "outline" && value.includes("49, 93, 76")) continue;
+            if (prop === "outline-offset" && computedStyle.getPropertyValue("outline").includes("49, 93, 76")) continue;
             styles.push(`${prop}:${value}`);
           }
           if (styles.length > 0) {
@@ -1795,14 +1799,14 @@ ${html}
     extractProperties(element, styles) {
       const properties = {
         element: {
-          'Element Type': element.tagName.toLowerCase(),
-          'Class Name': element.className && typeof element.className === 'string' ? element.className : 'none'
+          'Element Type': this.getElementType(element),
+          'Description': this.describeElement(element)
         }
       };
 
       if (element.textContent && element.textContent.trim()) {
         properties.typography = {
-          'Font Family': styles.fontFamily,
+          'Font Family': this.simplifyFontFamily(styles.fontFamily),
           'Font Size': styles.fontSize,
           'Font Weight': styles.fontWeight,
           'Line Height': styles.lineHeight,

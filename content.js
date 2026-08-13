@@ -815,7 +815,7 @@
       if (this._inspectGuidelinesEl) this._inspectGuidelinesEl.innerHTML = '';
     }
 
-    // ── Te: draw margin/padding box model (Miro colours: purple margin, green padding) ──
+    // ── Te: draw padding value pills (green number badges, no filled boxes) ───
     _miroDrawBoxModel(el) {
       const q = this._inspectGuidelinesEl;
       if (!q) return;
@@ -831,10 +831,6 @@
       const w = rect.width;
       const h = rect.height;
 
-      const mT = Math.max(0, parseFloat(cs.marginTop)    || 0);
-      const mR = Math.max(0, parseFloat(cs.marginRight)  || 0);
-      const mB = Math.max(0, parseFloat(cs.marginBottom) || 0);
-      const mL = Math.max(0, parseFloat(cs.marginLeft)   || 0);
       const pT = parseFloat(cs.paddingTop)    || 0;
       const pR = parseFloat(cs.paddingRight)  || 0;
       const pB = parseFloat(cs.paddingBottom) || 0;
@@ -844,18 +840,14 @@
       const bB = parseFloat(cs.borderBottomWidth) || 0;
       const bL = parseFloat(cs.borderLeftWidth)   || 0;
 
-      const hasMargin  = mT > 0 || mR > 0 || mB > 0 || mL > 0;
       const hasPadding = pT > 0 || pR > 0 || pB > 0 || pL > 0;
-      if (!hasMargin && !hasPadding) return;
+      if (!hasPadding) return;
 
       const container = document.createElement('div');
       container.className = 'uicc-inspector-boxmodel';
       container.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;';
 
-      // Miro exact colours
-      const marginBg     = 'rgba(135, 112, 163, 0.2)';
-      const marginBadge  = 'rgba(135, 112, 163, 0.85)';
-      const paddingBg    = 'rgba(76, 175, 80, 0.2)';
+      // Miro exact colour
       const paddingBadge = 'rgba(76, 175, 80, 0.85)';
 
       const labelStyle = `
@@ -870,30 +862,22 @@
         pointer-events:none;
       `;
 
-      function box(t, l, bw, bh, bg, size, badgeBg) {
+      function box(t, l, bw, bh, size, badgeBg) {
         if (size <= 0 || bw <= 0 || bh <= 0) return '';
         const val = Math.round(size * 10) / 10;
-        return `<div style="position:absolute;top:${t}px;left:${l}px;width:${bw}px;height:${bh}px;background:${bg};pointer-events:none;">
-          <div style="${labelStyle}background:${badgeBg};left:50%;top:50%;transform:translate(-50%,-50%)">${val}</div>
-        </div>`;
+        return `<div style="${labelStyle}background:${badgeBg};left:${l + bw / 2}px;top:${t + bh / 2}px;transform:translate(-50%,-50%)">${val}</div>`;
       }
 
       let html = '';
-      if (hasMargin) {
-        if (mT > 0) html += box(absTop - mT,         absLeft,       w,  mT, marginBg, mT, marginBadge);
-        if (mB > 0) html += box(absTop + h,           absLeft,       w,  mB, marginBg, mB, marginBadge);
-        if (mL > 0) html += box(absTop,               absLeft - mL, mL,   h, marginBg, mL, marginBadge);
-        if (mR > 0) html += box(absTop,               absLeft + w,  mR,   h, marginBg, mR, marginBadge);
-      }
       if (hasPadding) {
         const pt = absTop  + bT;
         const pl = absLeft + bL;
         const pw = w - bL - bR;
         const ph = h - bT - bB;
-        if (pT > 0) html += box(pt,           pl,       pw, pT, paddingBg, pT, paddingBadge);
-        if (pB > 0) html += box(pt + ph - pB, pl,       pw, pB, paddingBg, pB, paddingBadge);
-        if (pL > 0) html += box(pt + pT,      pl,       pL, ph - pT - pB, paddingBg, pL, paddingBadge);
-        if (pR > 0) html += box(pt + pT,      pl + pw - pR, pR, ph - pT - pB, paddingBg, pR, paddingBadge);
+        if (pT > 0) html += box(pt,           pl,       pw, pT, pT, paddingBadge);
+        if (pB > 0) html += box(pt + ph - pB, pl,       pw, pB, pB, paddingBadge);
+        if (pL > 0) html += box(pt + pT,      pl,       pL, ph - pT - pB, pL, paddingBadge);
+        if (pR > 0) html += box(pt + pT,      pl + pw - pR, pR, ph - pT - pB, pR, paddingBadge);
       }
 
       container.innerHTML = html;

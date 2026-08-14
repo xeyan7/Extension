@@ -69,8 +69,9 @@
       this.isSelectionMode = false;
       this.currentView = null;
       this.currentElement = null; // currently hovered element (Q in Miro)
-      this.pointerX = 0;
-      this.pointerY = 0;
+      this.pointerX = null;
+      this.pointerY = null;
+      this._scrollLocked = false;
       this.extractor = globalThis.UICCExtractor
         ? new globalThis.UICCExtractor.Extractor({ runtime: getExtensionRuntime(), baseUrl: window.location.href })
         : null;
@@ -741,16 +742,20 @@
 
     // ── Le: show the Super Design selection box over the element ────────────
     //    base styling comes from content.css `#sd-component-inspector`
-    //    (all:initial; fixed; 2px solid #2d8a68; soft green fill; 0.15s ease-out;
-    //    z-index 9999999). Geometry follows the element, radius matches it.
+    //    (all:initial; absolute; 2px solid #2d8a68; soft green fill; 0.12s ease-out;
+    //    z-index 9999990). Geometry follows the element in document coordinates,
+    //    so it stays perfectly locked during scroll with zero lag or drift.
     _miroAddOutline(el, locked = false) {
       if (!el || !el.isConnected) return;
       const box = this._miroGetSelectionBox();
       const rect = el.getBoundingClientRect();
+      const scrollX = window.scrollX || document.documentElement.scrollLeft;
+      const scrollY = window.scrollY || document.documentElement.scrollTop;
+
       box.style.display = 'block';
       box.classList.add('active');
-      box.style.top    = rect.top + 'px';
-      box.style.left   = rect.left + 'px';
+      box.style.top    = (rect.top + scrollY) + 'px';
+      box.style.left   = (rect.left + scrollX) + 'px';
       box.style.width  = rect.width + 'px';
       box.style.height = rect.height + 'px';
       box.style.borderRadius = getComputedStyle(el).borderRadius;
@@ -1015,18 +1020,25 @@ _miroSetHovered(el) {
       }
     }
 
-    // ── xt: mouseover handler ─────────────────────────────────────────────────
-    _miroOnMouseover = (e) => {
-      if (!this.isSelectionMode) return;
-      const target = e.target;
-      if (this.isOwnUI(target) || !this.isSelectable(target)) return;
+    // ── Helper: resolve target element under cursor (including media proximity) ─
+    _miroResolveTarget(target, px, py) {
+      if (!target || target.nodeType !== 1) return null;
+      if (this.isOwnUI(target)) return null;
 
       let el = target;
+      if (!this.isSelectable(el)) {
+        el = el.parentElement;
+        while (el && el !== document.body && el !== document.documentElement) {
+          if (this.isSelectable(el)) break;
+          el = el.parentElement;
+        }
+        if (!el || !this.isSelectable(el)) return null;
+      }
+
       // prefer nearest media child under cursor (Miro exact logic)
-      const media = target.querySelectorAll('img, video, audio, canvas');
-      if (media.length > 0) {
+      const media = el.querySelectorAll('img, video, audio, canvas');
+      if (media.length > 0 && px !== null && py !== null) {
         let best = null, bestDist = Infinity;
-        const px = this.pointerX, py = this.pointerY;
         media.forEach(m => {
           const r = m.getBoundingClientRect();
           const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
@@ -1037,8 +1049,21 @@ _miroSetHovered(el) {
         });
         if (best) el = best;
       }
+      return el;
+    }
 
-      if (el !== this.currentElement) this._miroSetHovered(el);
+    // ── xt: mouseover handler ─────────────────────────────────────────────────
+    _miroOnMouseover = (e) => {
+      if (!this.isSelectionMode || this._scrollLocked) return;
+      const target = e.target;
+      if (this.isOwnUI(target)) return;
+
+      const px = this.pointerX ?? e.clientX;
+      const py = this.pointerY ?? e.clientY;
+      const el = this._miroResolveTarget(target, px, py);
+      if (el && el !== this.currentElement) {
+        this._miroSetHovered(el);
+      }
     }
 
     // ── At: mouseout handler ──────────────────────────────────────────────────
@@ -1049,21 +1074,66 @@ _miroSetHovered(el) {
       const related = e.relatedTarget;
       // If mouse left the window entirely, clear everything
       if (!related) {
+        this._scrollLocked = false;
         this._miroClearHover();
         this.currentElement = null;
         return;
       }
+      // If hover focus is locked due to scrolling, do not clear
+      if (this._scrollLocked) return;
       // don't clear if moving into a child of the current element
       if (this.currentElement && this.currentElement.contains(related)) return;
       this._miroClearHover();
       this.currentElement = null;
     }
 
-    // ── Ct: mousemove handler — updates pointer coords ─────────────────────────
+    // ── Ct: mousemove handler — updates pointer coords & handles hover ────────
     _miroOnMousemove = (e) => {
       if (!this.isSelectionMode) return;
-      this.pointerX = e.clientX;
-      this.pointerY = e.clientY;
+
+      const prevX = this.pointerX;
+      const prevY = this.pointerY;
+      const currX = e.clientX;
+      const currY = e.clientY;
+
+      // If pointer coords haven't physically moved (e.g. synthetic mousemove on scroll), stay locked
+      if (prevX !== null && prevY !== null && prevX === currX && prevY === currY) {
+        return;
+      }
+
+      this.pointerX = currX;
+      this.pointerY = currY;
+      this._scrollLocked = false;
+
+      const target = e.target;
+      if (this.isOwnUI(target)) return;
+
+      const el = this._miroResolveTarget(target, currX, currY);
+      if (el) {
+        if (el !== this.currentElement) {
+          this._miroSetHovered(el);
+        }
+      } else {
+        if (this.currentElement) {
+          this._miroClearHover();
+          this.currentElement = null;
+        }
+      }
+    }
+
+    // ── wheel / scroll handlers — locks hover focus to current element on scroll ─
+    _miroOnWheel = () => {
+      if (!this.isSelectionMode) return;
+      if (this.currentElement && this.currentElement.isConnected) {
+        this._scrollLocked = true;
+      }
+    }
+
+    _miroOnScroll = () => {
+      if (!this.isSelectionMode) return;
+      if (this.currentElement && this.currentElement.isConnected) {
+        this._scrollLocked = true;
+      }
     }
 
     // ── vt: click handler ─────────────────────────────────────────────────────
@@ -1091,6 +1161,7 @@ _miroSetHovered(el) {
         if (!this.currentElement) return;
         const next = this.nextSelectable(this.currentElement);
         if (next) {
+          this._scrollLocked = true;
           this._miroSetHovered(next);
           next.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
@@ -1100,6 +1171,7 @@ _miroSetHovered(el) {
         if (!this.currentElement) return;
         const prev = this.prevSelectable(this.currentElement);
         if (prev) {
+          this._scrollLocked = true;
           this._miroSetHovered(prev);
           prev.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
@@ -1114,6 +1186,9 @@ _miroSetHovered(el) {
     // ── Jr: start inspector ───────────────────────────────────────────────────
     startSelectorMode() {
       this.isSelectionMode = true;
+      this._scrollLocked = false;
+      this.pointerX = null;
+      this.pointerY = null;
       this.currentView = 'selector';
       this.collapseToolbar('selector');
       if (this.overlay?.classList) this.overlay.classList.remove('uicc-hidden');
@@ -1129,7 +1204,8 @@ _miroSetHovered(el) {
       document.addEventListener('mousemove', this._miroOnMousemove, true);
       document.addEventListener('click',     this._miroOnClick,     true);
       document.addEventListener('keydown',   this._miroOnKeydown,   true);
-      window.addEventListener('scroll',      this.onViewportChange, true);
+      window.addEventListener('wheel',       this._miroOnWheel,     { passive: true, capture: true });
+      window.addEventListener('scroll',      this._miroOnScroll,    { passive: true, capture: true });
       window.addEventListener('resize',      this.onViewportChange, true);
       if (document.body) document.body.style.cursor = 'url("data:image/svg+xml,%3Csvg%20xmlns%3D\'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg\'%20width%3D\'28\'%20height%3D\'28\'%20viewBox%3D\'0%200%2028%2028\'%3E%3Cdefs%3E%3Cfilter%20id%3D\'g\'%20x%3D\'-50%25\'%20y%3D\'-50%25\'%20width%3D\'200%25\'%20height%3D\'200%25\'%3E%3CfeDropShadow%20dx%3D\'0\'%20dy%3D\'0\'%20stdDeviation%3D\'1.6\'%20flood-color%3D\'%23ffffff\'%20flood-opacity%3D\'0.9\'%2F%3E%3C%2Ffilter%3E%3C%2Fdefs%3E%3Cg%20filter%3D\'url(%23g)\'%20fill%3D\'none\'%20stroke%3D\'%23191a17\'%20stroke-width%3D\'2.2\'%20stroke-linecap%3D\'round\'%3E%3Cpath%20d%3D\'M14%205%20v18\'%2F%3E%3Cpath%20d%3D\'M5%2014%20h18\'%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E") 14 14, crosshair';
     }
@@ -1137,6 +1213,9 @@ _miroSetHovered(el) {
     // ── Et: stop inspector ────────────────────────────────────────────────────
     exitSelectionMode() {
       this.isSelectionMode = false;
+      this._scrollLocked = false;
+      this.pointerX = null;
+      this.pointerY = null;
       if (this.overlay?.classList) this.overlay.classList.add('uicc-hidden');
       if (document.body?.classList) document.body.classList.remove('uicc-selection-active');
       if (document.body) document.body.style.cursor = '';
@@ -1146,7 +1225,8 @@ _miroSetHovered(el) {
       document.removeEventListener('mousemove', this._miroOnMousemove, true);
       document.removeEventListener('click',     this._miroOnClick,     true);
       document.removeEventListener('keydown',   this._miroOnKeydown,   true);
-      window.removeEventListener('scroll',      this.onViewportChange, true);
+      window.removeEventListener('wheel',       this._miroOnWheel,     { capture: true });
+      window.removeEventListener('scroll',      this._miroOnScroll,    { capture: true });
       window.removeEventListener('resize',      this.onViewportChange, true);
 
       // Miro: hide panel, remove outline, hide guidelines + coord label
@@ -1161,10 +1241,7 @@ _miroSetHovered(el) {
       this.currentElement = null;
     }
 
-    // ── onViewportChange: re-draw on scroll/resize ────────────────────────────
-    // Mirrors Miro's behavior: the hover outline stays glued to the element as
-    // the page scrolls (Miro applies the outline class to the element itself;
-    // we redraw our fixed box to the element's new viewport rect instead).
+    // ── onViewportChange: only on window resize/zoom (zero scroll overhead) ──
     _viewportRafId = null;
     onViewportChange = () => {
       if (!this.isSelectionMode || !this.currentElement?.isConnected) return;
@@ -1207,7 +1284,7 @@ _miroSetHovered(el) {
 
     highlightElement(element) {
       if (element && element.isConnected) {
-        this._miroAddOutline(element, true);
+        this._miroAddOutline(element);
       }
     }
 

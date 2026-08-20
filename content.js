@@ -1652,7 +1652,7 @@ _miroSetHovered(el) {
         // clip props (needed so gradient-clipped / fill-colour text keeps its
         // colour in the preview).
         const propsToExtract = [
-          "display","box-sizing","position","top","right","bottom","left","z-index",
+          "display","position","top","right","bottom","left","z-index",
           "width","height","min-width","min-height","max-width","max-height",
           "margin","margin-top","margin-right","margin-bottom","margin-left",
           "padding","padding-top","padding-right","padding-bottom","padding-left",
@@ -1661,8 +1661,7 @@ _miroSetHovered(el) {
           "grid-template-columns","grid-template-rows","grid-column","grid-row",
           "overflow","overflow-x","overflow-y",
           "color","background","background-color","background-image","background-size",
-          "background-position","background-repeat","background-clip",
-          "-webkit-background-clip","-webkit-text-fill-color",
+          "background-position","background-repeat",
           "font-family","font-size","font-weight","font-style","line-height",
           "letter-spacing","text-align","text-transform","text-decoration",
           "white-space","word-break","text-overflow",
@@ -1738,6 +1737,14 @@ _miroSetHovered(el) {
       const iframe = this.toolbar?.querySelector('#uicc-preview-iframe');
       if (!iframe) return;
 
+      // Real on-page width of the selected element. Wide selections (e.g. the
+      // whole website) are previewed at this width so responsive media queries
+      // evaluate against the element's actual viewport instead of the narrow
+      // preview container (which would collapse the layout — broken text
+      // alignment, random line breaks, misaligned buttons).
+      let designWidth = 0;
+      try { designWidth = element.getBoundingClientRect().width; } catch (e) {}
+
       // Show Miro's exact loading spinner state initially
       try {
         const doc = iframe.contentDocument || iframe.contentWindow.document;
@@ -1801,17 +1808,17 @@ _miroSetHovered(el) {
       // 150ms auto-scale with zoom clamp). The inline template below remains as
       // the fallback path when the module is unavailable.
       if (globalThis.UICCPreview && typeof globalThis.UICCPreview.writePreviewToIframe === 'function') {
-        globalThis.UICCPreview.writePreviewToIframe(iframe, html, css);
+        globalThis.UICCPreview.writePreviewToIframe(iframe, html, css, designWidth);
         return;
       }
 
-      // Miro's EXACT iframe template with minimal reset
+      // Miro's EXACT iframe template with minimal reset (fixed for whole-website)
       const docHtml = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
   <style>
-    * { box-sizing: border-box; }
+    *, *::before, *::after { box-sizing: border-box; }
     a { text-decoration: inherit; color: inherit; }
     html, body {
       margin: 0;
@@ -1829,6 +1836,7 @@ _miroSetHovered(el) {
     }
     body > * {
       flex-shrink: 0;
+      text-align: initial;
     }
     ${css}
   </style>
@@ -1839,6 +1847,17 @@ ${html}
 </html>`;
 
       try {
+        const container = iframe.parentElement;
+        const containerW = container?.clientWidth || iframe.clientWidth || 300;
+        const wide = typeof designWidth === 'number' && isFinite(designWidth) && designWidth > containerW + 8;
+        if (wide) {
+          iframe.style.width = Math.max(320, Math.min(4000, Math.round(designWidth))) + 'px';
+          if (container) container.style.overflowX = 'hidden';
+        } else {
+          iframe.style.width = '';
+          if (container) container.style.overflowX = '';
+        }
+
         const doc = iframe.contentDocument || iframe.contentWindow.document;
         doc.open();
         doc.write(docHtml);
@@ -1851,13 +1870,20 @@ ${html}
             const firstChild = body.firstElementChild;
             if (firstChild) {
               const rect = firstChild.getBoundingClientRect();
-              const containerW = iframe.parentElement?.clientWidth || iframe.clientWidth || 300;
               const contentW = rect.width + 16; // 8px padding on each side
-              
               // Scale down if content is wider than container
               if (contentW > containerW && contentW > 0) {
-                const zoom = Math.max(containerW / contentW, 0.3);
+                // Wide (whole-site) previews scale fully so nothing is clipped;
+                // component previews keep Miro's readability clamp of 0.3.
+                const zoom = wide ? (containerW / contentW) : Math.max(containerW / contentW, 0.3);
                 body.style.zoom = zoom;
+                if (wide) {
+                  const s = doc.createElement('style');
+                  s.textContent = 'html, body { justify-content: flex-start !important; }';
+                  doc.head.appendChild(s);
+                  firstChild.style.marginLeft = '0';
+                  firstChild.style.marginRight = '0';
+                }
                 const scaledHeight = rect.height * zoom + 20;
                 iframe.style.height = Math.min(Math.max(scaledHeight, 60), 300) + 'px';
               } else {

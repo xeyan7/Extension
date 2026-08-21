@@ -1462,8 +1462,8 @@ _miroSetHovered(el) {
                 pageTitle: document.title,
                 pageUrl: location.href,
                 createdAt: new Date().toISOString(),
-                html: extracted.html,
-                css: extracted.css
+                html: extracted.cleanHtml || extracted.html,
+                css: extracted.cleanCss || extracted.css
               }
             });
             if (!response?.success) throw new Error(response?.error || 'Save failed');
@@ -2149,13 +2149,21 @@ ${html}
 
     async generateHTMLCSS(element) {
       const result = await this.getExtraction(element);
-      return result.combined;
+      if (result.cleanHtml && result.cleanCss) {
+        return `<!-- HTML -->\n${result.cleanHtml}\n\n<style>\n${result.cleanCss}\n</style>`;
+      }
+      return result.combined || `<!-- HTML -->\n${result.html}\n\n<style>\n${result.css || ''}\n</style>`;
     }
 
     async generateTailwind(element) {
       if (!this.extractor) throw new Error('Extraction engine unavailable');
-      await loadPostcss();
-      return this.extractor.toTailwind(element, await this.getExtraction(element));
+      const result = await this.getExtraction(element);
+      if (result.tailwindHtml) {
+        return result.tailwindFallbackCSS
+          ? `${result.tailwindHtml}\n\n<style>\n${result.tailwindFallbackCSS.trim()}\n</style>`
+          : result.tailwindHtml;
+      }
+      return this.extractor.toTailwind(element, result);
     }
 
     cleanSVG(svgElement) {

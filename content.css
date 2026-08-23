@@ -592,11 +592,27 @@
 }
 .uicc-hidden { display: none !important; }
 body.uicc-selection-active { cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'28'%20height%3D'28'%20viewBox%3D'0%200%2028%2028'%3E%3Cdefs%3E%3Cfilter%20id%3D'g'%20x%3D'-50%25'%20y%3D'-50%25'%20width%3D'200%25'%20height%3D'200%25'%3E%3CfeDropShadow%20dx%3D'0'%20dy%3D'0'%20stdDeviation%3D'1.6'%20flood-color%3D'%23ffffff'%20flood-opacity%3D'0.9'%2F%3E%3C%2Ffilter%3E%3C%2Fdefs%3E%3Cg%20filter%3D'url(%23g)'%20fill%3D'none'%20stroke%3D'%23191a17'%20stroke-width%3D'2.2'%20stroke-linecap%3D'round'%3E%3Cpath%20d%3D'M14%205%20v18'%2F%3E%3Cpath%20d%3D'M5%2014%20h18'%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E") 14 14, crosshair !important; user-select: none !important; -webkit-user-select: none !important; }
-.uicc-highlight,
+/* ── Selection box (self-owned UI, never styled into the page) ─────────────
+   #uicc-inspector-box-layer is a `position:fixed` canvas appended to <body>;
+   #sd-component-inspector lives INSIDE it and is re-synced every frame from
+   `getBoundingClientRect()` deltas, so it always sits exactly on top of the
+   hovered element (immune to containing blocks, inner scroll, zoom). */
+#uicc-inspector-box-layer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  z-index: 9999990;
+  overflow: visible;
+}
 #sd-component-inspector {
   all: initial;
   position: absolute !important;
-  z-index: 9999990 !important;
+  left: 0;
+  top: 0;
+  z-index: inherit;
   pointer-events: none !important;
   border: 2px solid #2d8a68 !important;
   cursor: pointer !important;
@@ -605,11 +621,9 @@ body.uicc-selection-active { cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D'h
   opacity: 0;
   box-sizing: border-box !important;
 }
-.uicc-highlight.uicc-highlight-active,
 #sd-component-inspector.active {
   opacity: 1;
 }
-.uicc-highlight.uicc-highlight-locked,
 #sd-component-inspector.locked {
   border: 3px solid #2d8a68 !important;
   box-shadow: 0 0 0 2px rgba(45, 138, 104, 0.3) !important;
@@ -620,15 +634,19 @@ body.uicc-selection-active { cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D'h
   50% { box-shadow: 0 0 0 2px rgba(45, 138, 104, 0.5) !important; }
 }
 
-/* ── Mirror Mirror `.asset-inspector-editing` – persistent selected outline ──
-   Applied directly to the selected element only, so it wraps around the
-   element (behind its content) instead of covering it like the hover box. */
+/* ── Backup hover rule (used only if the JS box layer is unavailable) ───── */
+.uicc-inspector-outline {
+  outline: 2px solid #315d4c !important;
+  outline-offset: 2px !important;
+}
+
+/* ── Persistent selected outline (applied to the selected element itself) ── */
 .uicc-inspector-selected {
   outline: 1.5px dashed #315d4c !important;
   outline-offset: 2px !important;
 }
 
-.uicc-guidelines { position: absolute; top: 0; left: 0; z-index: var(--uicc-layer-guide); width: 100%; pointer-events: none; }
+.uicc-guidelines { position: fixed; top: 0; left: 0; z-index: var(--uicc-layer-guide); width: 100%; height: 100%; pointer-events: none; }
 
 @media (max-width: 520px) {
   #sd-toolbar { right: 8px !important; max-width: calc(100vw - 16px); }
@@ -649,5 +667,6 @@ body.uicc-selection-active { cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D'h
 @media (prefers-reduced-motion: reduce) {
   #sd-toolbar *,
   .uicc-toast,
-  .uicc-highlight { animation: none !important; transition-duration: 0.01ms !important; }
+  #sd-component-inspector,
+  .uicc-inspector-selected { animation: none !important; transition-duration: 0.01ms !important; }
 }

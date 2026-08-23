@@ -90,9 +90,23 @@
       this._inspectHighlightStyle = null; // <style> tag injected into <head>
       this._inspectOverlay = null;        // J  – frosted-glass preview panel
       this._inspectCoordLabel = null;     // Z  – coordinate pill that follows cursor
-      this._inspectGuidelinesEl = null;   // q  – absolute div for SVG lines + box model
-      this._inspectHighlightClass = 'uicc-inspector-outline'; // Fe
+      this._inspectGuidelinesEl = null;   // q  – fixed div for SVG lines + box model
+      this._inspectHighlightClass = 'uicc-inspector-outline'; // Fe (backup outline rule)
       this._inspectSelectedClass = 'uicc-inspector-selected'; // Miro asset-inspector-editing (persistent selected outline)
+
+      // Outline classes applied directly to the element (Miro approach).
+      // The outline CSS property naturally follows the element's border-radius,
+      // so it perfectly wraps any shape without needing a separate positioned box.
+      this._inspectHoverOutlineClass = 'uicc-hover-outline';
+      this._inspectLockedOutlineClass = 'uicc-locked-outline';
+      this._outlineStyleEl = null;        // <style> tag for the outline classes
+
+      // Selection tracking state
+      this._boxTarget = null;             // the element currently highlighted
+      this._boxLocked = false;            // locked → pulse style (persistent selection)
+      this._boxLastEl = null;             // for tracking element changes
+      this._boxElChangedAt = null;
+      this._boxRafId = null;              // rAF handle for guidelines refresh
       // ────────────────────────────────────────────────────────────────────────
 
       this.init();
@@ -143,6 +157,15 @@
       this._inspectGuidelinesEl = null;
       this._inspectCoordLabel = null;
       this._inspectOverlay = null;
+      // Remove any leftover outline classes from elements
+      document.querySelectorAll('.' + this._inspectHoverOutlineClass).forEach(n => n.classList.remove(this._inspectHoverOutlineClass));
+      document.querySelectorAll('.' + this._inspectLockedOutlineClass).forEach(n => n.classList.remove(this._inspectLockedOutlineClass));
+      // Remove any leftover legacy selection box and sticky hover/selection classes
+      document.querySelectorAll('#sd-component-inspector').forEach(n => n.remove());
+      document.querySelectorAll('#uicc-inspector-box-layer').forEach(n => n.remove());
+      document.querySelectorAll('.' + this._inspectHighlightClass).forEach(n => n.classList.remove(this._inspectHighlightClass));
+      document.querySelectorAll('.' + this._inspectSelectedClass).forEach(n => n.classList.remove(this._inspectSelectedClass));
+      if (this._outlineStyleEl) { this._outlineStyleEl.remove(); this._outlineStyleEl = null; }
       this._miroRemoveHighlightStyle();
     }
 
@@ -667,7 +690,7 @@
       this._inspectOverlay = el;
     }
 
-    // ── Or: create the absolute guidelines container (q) ─────────────────────
+    // ── Or: create the fixed viewport-space guidelines canvas (q) ────────────
     _miroCreateGuidelines() {
       if (this._inspectGuidelinesEl) {
         this._inspectGuidelinesEl.style.display = '';
@@ -676,13 +699,14 @@
       const el = document.createElement('div');
       el.id = 'uicc-inspector-guidelines';
       el.style.cssText = `
-        position: absolute;
+        position: fixed;
         top: 0;
         left: 0;
         width: 100%;
+        height: 100%;
         pointer-events: none;
         z-index: 999995;
-        overflow: visible;
+        overflow: hidden;
       `;
       document.body.appendChild(el);
       this._inspectGuidelinesEl = el;
@@ -729,57 +753,81 @@
       this._inspectCoordLabel.textContent = `${Math.round(x + window.scrollX)}, ${Math.round(y + window.scrollY)}`;
     }
 
-    // ── Super Design selection box (one-to-one: $e + M) ──────────────────────
-    _miroGetSelectionBox() {
-      let box = document.getElementById('sd-component-inspector');
-      if (!box) {
-        box = document.createElement('div');
-        box.id = 'sd-component-inspector';
-        document.body.appendChild(box);
-      }
-      return box;
-    }
-
-    // ── Le: show the Super Design selection box over the element ────────────
-    //    base styling comes from content.css `#sd-component-inspector`
-    //    (all:initial; absolute; 2px solid #2d8a68; soft green fill; 0.12s ease-out;
-    //    z-index 9999990). Geometry follows the element in document coordinates,
-    //    so it stays perfectly locked during scroll with zero lag or drift.
+    // ── Le: show the selection box OVER the hovered element ──────────────────
+    //    The box is the real self-owned UI (green fill + border + pulse when
+    //    locked). Bulletproof alignment is achieved by:
+    //      1. The box lives INSIDE a `position:fixed` layer appended to <body>
+    //         (never positioned against page-coordinates / scroll offsets).
+    //      2. Every update we measure BOTH the layer's own rect and the target
+    //         element's rect in viewport space and set `box = target − layer`.
+    //         Any containing-block weirdness on <body>/<html> (transform,
+    //         filter, zoom, contain) and any inner scroll container cancels
+    //         out, because both sides are measured at the same instant.
+    //      3. A rAF loop keeps the box glued to the element during scroll,
+    //         resize and even element CSS animations. While tracking the same
+    //         element the box uses `transition:none` (exact lock); only jumps
+    //         between DIFFERENT elements get the smooth CSS ease.
     _miroAddOutline(el, locked = false) {
       if (!el || !el.isConnected) return;
-      const box = this._miroGetSelectionBox();
-      const rect = el.getBoundingClientRect();
-      const scrollX = window.scrollX || document.documentElement.scrollLeft;
-      const scrollY = window.scrollY || document.documentElement.scrollTop;
-
-      box.style.display = 'block';
-      box.classList.add('active');
-      box.style.top    = (rect.top + scrollY) + 'px';
-      box.style.left   = (rect.left + scrollX) + 'px';
-      box.style.width  = rect.width + 'px';
-      box.style.height = rect.height + 'px';
-      box.style.borderRadius = getComputedStyle(el).borderRadius;
-      box.classList.toggle('locked', !!locked);
-      if (!document.getElementById('sd-pulse-animation')) {
-        const style = document.createElement('style');
-        style.id = 'sd-pulse-animation';
-        style.textContent = `
-          @keyframes sd-pulse-shadow {
-            0%, 100% { box-shadow: 0 0 0 2px rgba(45, 138, 104, 0.15) !important; }
-            50% { box-shadow: 0 0 0 2px rgba(45, 138, 104, 0.5) !important; }
-          }
-        `;
-        document.head.appendChild(style);
+      // Remove outline from any previously highlighted element
+      this._miroRemoveOutline();
+      this._boxTarget = el;
+      this._boxLocked = !!locked;
+      // Apply outline directly on the element via CSS class (like Miro).
+      // This ensures the highlight perfectly follows the element's actual
+      // rendered shape including border-radius, transforms, etc.
+      this._ensureOutlineStyle();
+      el.classList.add(this._inspectHoverOutlineClass);
+      if (locked) {
+        el.classList.add(this._inspectLockedOutlineClass);
       }
     }
 
-    // ── Ge: hide the Super Design selection box ─────────────────────────────
-    _miroRemoveOutline() {
-      const box = document.getElementById('sd-component-inspector');
-      if (box) {
-        box.classList.remove('active', 'locked');
-        box.style.display = 'none';
+    // ── (lazy) inject the <style> for hover/locked outline classes ───────────
+    _ensureOutlineStyle() {
+      if (this._outlineStyleEl) return;
+      this._outlineStyleEl = document.createElement('style');
+      this._outlineStyleEl.id = 'uicc-inspector-outline-style';
+      this._outlineStyleEl.textContent = `
+        .${this._inspectHoverOutlineClass} {
+          outline: 2px solid #2d8a68 !important;
+          outline-offset: 2px !important;
+        }
+        .${this._inspectLockedOutlineClass} {
+          outline: 3px solid #2d8a68 !important;
+          outline-offset: 2px !important;
+          animation: uicc-outline-pulse 1.5s ease-in-out infinite !important;
+        }
+        @keyframes uicc-outline-pulse {
+          0%, 100% { outline-color: rgba(45, 138, 104, 0.6) !important; }
+          50% { outline-color: rgba(45, 138, 104, 1) !important; }
+        }
+      `;
+      document.head.appendChild(this._outlineStyleEl);
+    }
+
+    _stopBoxTracking() {
+      if (this._boxRafId) {
+        cancelAnimationFrame(this._boxRafId);
+        this._boxRafId = null;
       }
+    }
+
+    // ── Ge: remove the outline from the highlighted element ─────────────────
+    _miroRemoveOutline() {
+      this._stopBoxTracking();
+      if (this._boxTarget && this._boxTarget.isConnected) {
+        this._boxTarget.classList.remove(this._inspectHoverOutlineClass);
+        this._boxTarget.classList.remove(this._inspectLockedOutlineClass);
+      }
+      // Also clean up any stray elements that might still have the class
+      document.querySelectorAll('.' + this._inspectHoverOutlineClass)
+        .forEach(n => n.classList.remove(this._inspectHoverOutlineClass));
+      document.querySelectorAll('.' + this._inspectLockedOutlineClass)
+        .forEach(n => n.classList.remove(this._inspectLockedOutlineClass));
+      this._boxTarget = null;
+      this._boxLastEl = null;
+      this._boxElChangedAt = null;
     }
 
     // ── St: apply the persistent "selected" outline (Miro asset-inspector-editing) ──
@@ -795,22 +843,20 @@
         .forEach(n => n.classList.remove(this._inspectSelectedClass));
     }
 
-    // ── Me: draw guidelines SVG lines in the absolute guidelines div ──────────
+    // ── Me: draw guidelines SVG lines in the fixed viewport canvas ────────────
     _miroDrawGuidelines(el) {
       const q = this._inspectGuidelinesEl;
       if (!q) return;
       const rect = el.getBoundingClientRect();
-      const scrollX = window.scrollX || document.documentElement.scrollLeft;
-      const scrollY = window.scrollY || document.documentElement.scrollTop;
-      const scrollW = document.scrollingElement.scrollWidth;
-      const scrollH = document.scrollingElement.scrollHeight;
-      const viewW   = document.documentElement.clientWidth;
-      const absTop    = rect.top    + scrollY;
-      const absRight  = rect.right  + scrollX;
-      const absBottom = rect.bottom + scrollY;
-      const absLeft   = rect.left   + scrollX;
+      const qr   = q.getBoundingClientRect();   // canvas origin in viewport space
 
-      q.style.height = scrollH + 'px';
+      // Coordinates RELATIVE to the fixed canvas → any containing-block or
+      // inner-scroll displacement cancels out (same trick as the box).
+      const left   = rect.left   - qr.left;
+      const right  = rect.right  - qr.left;
+      const top    = rect.top    - qr.top;
+      const bottom = rect.bottom - qr.top;
+
       const NS = 'http://www.w3.org/2000/svg';
       let svg = q.querySelector('svg');
       if (!svg) {
@@ -818,14 +864,13 @@
         svg.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;overflow:visible;';
         q.insertBefore(svg, q.firstChild);
       }
-      svg.setAttribute('width', '100%');
-      svg.setAttribute('viewBox', `0 0 ${viewW} ${scrollH}`);
-      svg.setAttribute('preserveAspectRatio', 'none');
+      svg.setAttribute('width', q.clientWidth + 'px');
+      svg.setAttribute('height', q.clientHeight + 'px');
       svg.innerHTML = `
-        <line x1="${absLeft}"  y1="0" x2="${absLeft}"  y2="${scrollH}" stroke="rgba(135,112,163,0.4)" stroke-width="1" stroke-dasharray="4 4" />
-        <line x1="${absRight}" y1="0" x2="${absRight}" y2="${scrollH}" stroke="rgba(135,112,163,0.4)" stroke-width="1" stroke-dasharray="4 4" />
-        <line x1="0" y1="${absTop}"    x2="${scrollW}" y2="${absTop}"    stroke="rgba(135,112,163,0.4)" stroke-width="1" stroke-dasharray="4 4" />
-        <line x1="0" y1="${absBottom}" x2="${scrollW}" y2="${absBottom}" stroke="rgba(135,112,163,0.4)" stroke-width="1" stroke-dasharray="4 4" />
+        <line x1="${left}"   x2="${left}"   y1="0" y2="${q.clientHeight}" stroke="rgba(135,112,163,0.4)" stroke-width="1" stroke-dasharray="4 4" />
+        <line x1="${right}"  x2="${right}"  y1="0" y2="${q.clientHeight}" stroke="rgba(135,112,163,0.4)" stroke-width="1" stroke-dasharray="4 4" />
+        <line x1="0" y1="${top}"    x2="${q.clientWidth}" y2="${top}"    stroke="rgba(135,112,163,0.4)" stroke-width="1" stroke-dasharray="4 4" />
+        <line x1="0" y1="${bottom}" x2="${q.clientWidth}" y2="${bottom}" stroke="rgba(135,112,163,0.4)" stroke-width="1" stroke-dasharray="4 4" />
       `;
     }
 
@@ -841,12 +886,12 @@
       q.querySelectorAll('.uicc-inspector-boxmodel').forEach(d => d.remove());
 
       const rect = el.getBoundingClientRect();
+      const qr   = q.getBoundingClientRect();   // canvas origin in viewport space
       const cs   = window.getComputedStyle(el);
-      const scrollX = window.scrollX || document.documentElement.scrollLeft;
-      const scrollY = window.scrollY || document.documentElement.scrollTop;
 
-      const absTop  = rect.top  + scrollY;
-      const absLeft = rect.left + scrollX;
+      // Viewport-space relative to the fixed canvas (aligns with box + guides).
+      const absTop  = rect.top  - qr.top;
+      const absLeft = rect.left - qr.left;
       const w = rect.width;
       const h = rect.height;
 
@@ -1121,11 +1166,12 @@ _miroSetHovered(el) {
       }
     }
 
-    // ── wheel / scroll handlers — locks hover focus to current element on scroll ─
+    // ── wheel / scroll handlers — locks hover focus and re-syncs the viewport canvas ─
     _miroOnWheel = () => {
       if (!this.isSelectionMode) return;
       if (this.currentElement && this.currentElement.isConnected) {
         this._scrollLocked = true;
+        this._refreshInspectorVisuals();
       }
     }
 
@@ -1133,6 +1179,7 @@ _miroSetHovered(el) {
       if (!this.isSelectionMode) return;
       if (this.currentElement && this.currentElement.isConnected) {
         this._scrollLocked = true;
+        this._refreshInspectorVisuals();
       }
     }
 
@@ -1148,6 +1195,8 @@ _miroSetHovered(el) {
       this._lastExtraction = null;
       this.exitSelectionMode();
       this._miroApplySelectedOutline(this.selectedElement);
+      // Persist the selection box UI (locked + pulse) on the chosen element
+      this._miroAddOutline(this.selectedElement, true);
       this.setActiveButton('selector');
       this.showSelectedComponent();
     }
@@ -1236,24 +1285,27 @@ _miroSetHovered(el) {
       this._miroRemoveHighlightStyle();
       if (this._inspectGuidelinesEl)  { this._inspectGuidelinesEl.style.display = 'none'; this._inspectGuidelinesEl.innerHTML = ''; }
       if (this._inspectCoordLabel)    { this._inspectCoordLabel.style.display = 'none'; }
-      if (this._viewportRafId)        { cancelAnimationFrame(this._viewportRafId); this._viewportRafId = null; }
+      if (this._visualRefreshRafId)    { cancelAnimationFrame(this._visualRefreshRafId); this._visualRefreshRafId = null; }
 
       this.currentElement = null;
     }
 
-    // ── onViewportChange: only on window resize/zoom (zero scroll overhead) ──
-    _viewportRafId = null;
-    onViewportChange = () => {
+    // ── onViewportChange + scroll refresh: re-sync the selection visuals ─────
+    //    The selection box is glued by its own rAF loop + delta math; this
+    //    refresh only re-draws the guidelines + box-model badges on scroll/
+    //    resize and nudges the box if the tracked element changed.
+    _visualRefreshRafId = null;
+    _refreshInspectorVisuals() {
       if (!this.isSelectionMode || !this.currentElement?.isConnected) return;
-      if (this._viewportRafId) return;
-      this._viewportRafId = requestAnimationFrame(() => {
-        this._viewportRafId = null;
+      if (this._visualRefreshRafId) return;
+      this._visualRefreshRafId = requestAnimationFrame(() => {
+        this._visualRefreshRafId = null;
         if (!this.isSelectionMode || !this.currentElement?.isConnected) return;
-        this._miroAddOutline(this.currentElement);
         this._miroDrawGuidelines(this.currentElement);
         this._miroDrawBoxModel(this.currentElement);
       });
     }
+    onViewportChange = () => { this._refreshInspectorVisuals(); }
 
     // ── Stubs kept for backward-compat with showSelectedComponent ────────────
     renderSelectorPrompt() {

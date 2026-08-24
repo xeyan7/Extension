@@ -967,9 +967,7 @@
       const y = document.createElement('div');
       y.className = 'uicc-inspector-boxmodel';
       y.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;';
-      const x = 'rgba(135, 112, 163, 0.2)';
       const E = 'rgba(135, 112, 163, 0.85)';
-      const $ = 'rgba(76, 175, 80, 0.2)';
       const M = 'rgba(76, 175, 80, 0.85)';
       const F = `
         position:absolute;
@@ -982,31 +980,31 @@
         white-space:nowrap;
         pointer-events:none;
       `;
-      function k(B, I, L, z, W, X, Y, T) {
+      function k(B, I, L, z, X, Y, T) {
         if (X <= 0 || L <= 0 || z <= 0) return '';
         const P = Math.round(X * 10) / 10;
         let D = '';
         D = 'left:50%;top:50%;transform:translate(-50%,-50%);';
-        return `<div style="position:absolute;top:${B}px;left:${I}px;width:${L}px;height:${z}px;background:${W};pointer-events:none;">
+        return `<div style="position:absolute;top:${B}px;left:${I}px;width:${L}px;height:${z}px;pointer-events:none;">
           <div style="${F}background:${Y};${D}">${P}</div>
         </div>`;
       }
       let R = '';
       if (v) {
-        if (s > 0) R += k(c - s, f, m, s, x, s, E, 'top');
-        if (i > 0) R += k(c + o, f, m, i, x, i, E, 'bottom');
-        if (b > 0) R += k(c, f - b, b, o, x, b, E, 'left');
-        if (a > 0) R += k(c, f + m, a, o, x, a, E, 'right');
+        if (s > 0) R += k(c - s, f, m, s, s, E, 'top');
+        if (i > 0) R += k(c + o, f, m, i, i, E, 'bottom');
+        if (b > 0) R += k(c, f - b, b, o, b, E, 'left');
+        if (a > 0) R += k(c, f + m, a, o, a, E, 'right');
       }
       if (p) {
         const B = c + A;
         const I = f + w;
         const L = m - w - C;
         const z = o - A - d;
-        if (u > 0) R += k(B, I, L, u, $, u, M, 'top');
-        if (g > 0) R += k(B + z - g, I, L, g, $, g, M, 'bottom');
-        if (S > 0) R += k(B + u, I, S, z - u - g, $, S, M, 'left');
-        if (h > 0) R += k(B + u, I + L - h, h, z - u - g, $, h, M, 'right');
+        if (u > 0) R += k(B, I, L, u, u, M, 'top');
+        if (g > 0) R += k(B + z - g, I, L, g, g, M, 'bottom');
+        if (S > 0) R += k(B + u, I, S, z - u - g, S, M, 'left');
+        if (h > 0) R += k(B + u, I + L - h, h, z - u - g, h, M, 'right');
       }
       y.innerHTML = R;
       q.appendChild(y);

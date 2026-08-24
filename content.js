@@ -1243,12 +1243,7 @@ _miroSetHovered(el) {
       this.selectedElement = el;
       this._lastExtraction = null;
       this.exitSelectionMode();
-      // NOTE: the dashed `.uicc-inspector-selected` outline is deliberately not
-      // applied. It sits on the element while the locked ring sits on the box,
-      // and two rings from two differently-snapped boxes are what produced the
-      // doubled, misaligned edge. The locked ring plus its pulse already marks
-      // the selection, so this stays a single ring.
-      this._miroAddOutline(this.selectedElement, true);
+      this._miroApplySelectedOutline(this.selectedElement);
       this.setActiveButton('selector');
       this.showSelectedComponent();
     }

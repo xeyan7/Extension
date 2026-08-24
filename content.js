@@ -69,9 +69,8 @@
       this.isSelectionMode = false;
       this.currentView = null;
       this.currentElement = null; // currently hovered element (Q in Miro)
-      this.pointerX = null;
-      this.pointerY = null;
-      this._scrollLocked = false;
+      this.pointerX = 0;
+      this.pointerY = 0;
       this.extractor = globalThis.UICCExtractor
         ? new globalThis.UICCExtractor.Extractor({ runtime: getExtensionRuntime(), baseUrl: window.location.href })
         : null;
@@ -94,19 +93,26 @@
       this._inspectHighlightClass = 'uicc-inspector-outline'; // Fe (backup outline rule)
       this._inspectSelectedClass = 'uicc-inspector-selected'; // Miro asset-inspector-editing (persistent selected outline)
 
-      // Outline classes applied directly to the element (Miro approach).
-      // The outline CSS property naturally follows the element's border-radius,
-      // so it perfectly wraps any shape without needing a separate positioned box.
+      // Crisp highlight ring — painted on the element via these classes, the
+      // way Miro does it, so it is snapped to device pixels together with the
+      // element and stays perfectly aligned at any zoom / display scaling.
       this._inspectHoverOutlineClass = 'uicc-hover-outline';
       this._inspectLockedOutlineClass = 'uicc-locked-outline';
-      this._outlineStyleEl = null;        // <style> tag for the outline classes
 
-      // Selection tracking state
-      this._boxTarget = null;             // the element currently highlighted
+      // Selection box UI + live-tracking state
+      // #sd-component-inspector renders this extension's SOFT look: the green
+      // fill, the 0.12s glide, the fade and the locked pulse halo. It carries no
+      // crisp stroke, so its sub-pixel snapping can never be seen. It lives
+      // inside a `position:fixed` layer and is re-synced every frame from
+      // `getBoundingClientRect()` deltas, sized to the element's EXACT border
+      // box (no padding, sub-pixel accurate, per-corner radius copied).
+      this._selectionBoxLayer = null;     // fixed layer — the box lives INSIDE it
+      this._selectionBox = null;          // #sd-component-inspector (the visual box)
+      this._boxTarget = null;             // the element the box is currently tracking
       this._boxLocked = false;            // locked → pulse style (persistent selection)
-      this._boxLastEl = null;             // for tracking element changes
+      this._boxLastEl = null;             // for smooth element jumps vs. exact tracking
       this._boxElChangedAt = null;
-      this._boxRafId = null;              // rAF handle for guidelines refresh
+      this._boxRafId = null;              // rAF handle that glues box to element
       // ────────────────────────────────────────────────────────────────────────
 
       this.init();
@@ -151,21 +157,21 @@
         this.overlay = null;
       }
       // Clean up orphaned inspector elements
-      [this._inspectGuidelinesEl, this._inspectCoordLabel, this._inspectOverlay].forEach(el => {
+      [this._selectionBoxLayer, this._inspectGuidelinesEl, this._inspectCoordLabel, this._inspectOverlay].forEach(el => {
         if (el && el.parentNode) el.remove();
       });
+      this._selectionBoxLayer = null;
+      this._selectionBox = null;
       this._inspectGuidelinesEl = null;
       this._inspectCoordLabel = null;
       this._inspectOverlay = null;
-      // Remove any leftover outline classes from elements
-      document.querySelectorAll('.' + this._inspectHoverOutlineClass).forEach(n => n.classList.remove(this._inspectHoverOutlineClass));
-      document.querySelectorAll('.' + this._inspectLockedOutlineClass).forEach(n => n.classList.remove(this._inspectLockedOutlineClass));
-      // Remove any leftover legacy selection box and sticky hover/selection classes
+      // Remove any leftover selection box layers and sticky hover/selection classes
       document.querySelectorAll('#sd-component-inspector').forEach(n => n.remove());
       document.querySelectorAll('#uicc-inspector-box-layer').forEach(n => n.remove());
+      document.querySelectorAll('#uicc-inspector-outline-style').forEach(n => n.remove());
+      this._miroClearOutlineClasses();
       document.querySelectorAll('.' + this._inspectHighlightClass).forEach(n => n.classList.remove(this._inspectHighlightClass));
       document.querySelectorAll('.' + this._inspectSelectedClass).forEach(n => n.classList.remove(this._inspectSelectedClass));
-      if (this._outlineStyleEl) { this._outlineStyleEl.remove(); this._outlineStyleEl = null; }
       this._miroRemoveHighlightStyle();
     }
 
@@ -535,9 +541,12 @@
       return false;
     }
 
+    // ── he: Miro-exact. Only documentElement, zero-size and hidden are out.
+    //    NOTE: <body> is deliberately allowed (Miro allows it), and own-UI is
+    //    checked separately by callers via isOwnUI (Miro's `pe`), exactly as
+    //    Miro does — never folded into this predicate.
     isSelectable(t) {
-      if (!t || t.nodeType !== 1 || t === document.documentElement || t === document.body) return false;
-      if (this.isOwnUI(t)) return false;
+      if (!t || t.nodeType !== 1 || t === document.documentElement) return false;
       const rect = t.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return false;
       const cs = window.getComputedStyle(t);
@@ -545,44 +554,27 @@
       return true;
     }
 
+    // ── Ir: next selectable in FLAT DOCUMENT ORDER (Miro-exact) ──────────────
+    //    Miro walks a flat `body, body *` array, not the tree. Tree-walking
+    //    produces a different (and surprising) order, which is why arrow-key
+    //    navigation used to land on unexpected elements.
     nextSelectable(t) {
-      if (!t) return null;
-      let curr = t.firstElementChild || t.nextElementSibling;
-      if (!curr) {
-        let p = t.parentElement;
-        while (p && !p.nextElementSibling && p !== document.body) p = p.parentElement;
-        if (p && p.nextElementSibling && p !== document.body) curr = p.nextElementSibling;
-      }
-      while (curr && curr !== document.body) {
-        if (this.isSelectable(curr)) return curr;
-        let nxt = curr.firstElementChild || curr.nextElementSibling;
-        if (!nxt) {
-          let p = curr.parentElement;
-          while (p && !p.nextElementSibling && p !== document.body) p = p.parentElement;
-          if (p && p.nextElementSibling && p !== document.body) nxt = p.nextElementSibling;
-        }
-        curr = nxt;
+      const all = Array.from(document.querySelectorAll('body, body *'));
+      const i = all.indexOf(t);
+      if (i === -1) return all.find(el => this.isSelectable(el)) || null;
+      for (let n = i + 1; n < all.length; n++) {
+        if (!this.isOwnUI(all[n]) && this.isSelectable(all[n])) return all[n];
       }
       return null;
     }
 
+    // ── zr: previous selectable in FLAT DOCUMENT ORDER (Miro-exact) ──────────
     prevSelectable(t) {
-      if (!t) return null;
-      let curr = t.previousElementSibling;
-      if (curr) {
-        while (curr.lastElementChild) curr = curr.lastElementChild;
-      } else {
-        curr = t.parentElement;
-      }
-      while (curr && curr !== document.body) {
-        if (this.isSelectable(curr)) return curr;
-        let prev = curr.previousElementSibling;
-        if (prev) {
-          while (prev.lastElementChild) prev = prev.lastElementChild;
-          curr = prev;
-        } else {
-          curr = curr.parentElement;
-        }
+      const all = Array.from(document.querySelectorAll('body, body *'));
+      const i = all.indexOf(t);
+      if (i === -1) return all.find(el => this.isSelectable(el)) || null;
+      for (let n = i - 1; n >= 0; n--) {
+        if (!this.isOwnUI(all[n]) && this.isSelectable(all[n])) return all[n];
       }
       return null;
     }
@@ -753,57 +745,144 @@
       this._inspectCoordLabel.textContent = `${Math.round(x + window.scrollX)}, ${Math.round(y + window.scrollY)}`;
     }
 
-    // ── Le: show the selection box OVER the hovered element ──────────────────
-    //    The box is the real self-owned UI (green fill + border + pulse when
-    //    locked). Bulletproof alignment is achieved by:
-    //      1. The box lives INSIDE a `position:fixed` layer appended to <body>
-    //         (never positioned against page-coordinates / scroll offsets).
-    //      2. Every update we measure BOTH the layer's own rect and the target
-    //         element's rect in viewport space and set `box = target − layer`.
-    //         Any containing-block weirdness on <body>/<html> (transform,
-    //         filter, zoom, contain) and any inner scroll container cancels
-    //         out, because both sides are measured at the same instant.
-    //      3. A rAF loop keeps the box glued to the element during scroll,
-    //         resize and even element CSS animations. While tracking the same
-    //         element the box uses `transition:none` (exact lock); only jumps
-    //         between DIFFERENT elements get the smooth CSS ease.
+    // ── Le: highlight the hovered element ────────────────────────────────────
+    //    ── How the UI and Miro's accuracy coexist ──────────────────────────
+    //    They previously fought because BOTH tried to own the stroke geometry:
+    //      • This extension's UI drew the stroke as a `border` on a measured
+    //        div. With `box-sizing:border-box` a border is painted INSIDE the
+    //        rect, so it covered the element's outer 2px and read as "clipping".
+    //      • Miro's accuracy comes from `outline` + `outline-offset`, which is
+    //        painted OUTSIDE and whose corner curves the BROWSER derives from
+    //        border-radius. Nothing is measured, so nothing can be wrong.
+    //    The fix is to split the two concerns: the browser owns the geometry,
+    //    this extension owns the appearance. The overlay box is still the thing
+    //    that renders (fill, colours, thicknesses, pulse, glide — all ours),
+    //    but its stroke primitive is `outline` instead of `border`, so the same
+    //    browser computation Miro depends on is what places it. No radius
+    //    arithmetic, no inflation, and the page element is never restyled.
     _miroAddOutline(el, locked = false) {
       if (!el || !el.isConnected) return;
-      // Remove outline from any previously highlighted element
-      this._miroRemoveOutline();
+
+      // The ring is drawn by the overlay box, never on the page element.
+      // Painting it on the element made it subject to the page: an ancestor with
+      // `overflow: hidden` clips it, a later-painting sibling covers it, and the
+      // page cascade can suppress it — which is why it sometimes failed to show
+      // even though the element resolved correctly. The box lives in a
+      // `position:fixed` top-level layer, so none of that can reach it, and edge
+      // snapping in _syncSelectionBox keeps it pixel-aligned with the element.
+      this._miroClearOutlineClasses();
+      if (!this._ensureSelectionBoxElements()) return;
       this._boxTarget = el;
       this._boxLocked = !!locked;
-      // Apply outline directly on the element via CSS class (like Miro).
-      // This ensures the highlight perfectly follows the element's actual
-      // rendered shape including border-radius, transforms, etc.
-      this._ensureOutlineStyle();
-      el.classList.add(this._inspectHoverOutlineClass);
-      if (locked) {
-        el.classList.add(this._inspectLockedOutlineClass);
-      }
+      this._syncSelectionBox(el);
+      this._startBoxTracking();
     }
 
-    // ── (lazy) inject the <style> for hover/locked outline classes ───────────
-    _ensureOutlineStyle() {
-      if (this._outlineStyleEl) return;
-      this._outlineStyleEl = document.createElement('style');
-      this._outlineStyleEl.id = 'uicc-inspector-outline-style';
-      this._outlineStyleEl.textContent = `
-        .${this._inspectHoverOutlineClass} {
-          outline: 2px solid #2d8a68 !important;
-          outline-offset: 2px !important;
-        }
-        .${this._inspectLockedOutlineClass} {
-          outline: 3px solid #2d8a68 !important;
-          outline-offset: 2px !important;
-          animation: uicc-outline-pulse 1.5s ease-in-out infinite !important;
-        }
-        @keyframes uicc-outline-pulse {
-          0%, 100% { outline-color: rgba(45, 138, 104, 0.6) !important; }
-          50% { outline-color: rgba(45, 138, 104, 1) !important; }
-        }
+    // ── Strip any stray ring classes left by an earlier session ─────────────
+    _miroClearOutlineClasses() {
+      document.querySelectorAll('.' + this._inspectHoverOutlineClass)
+        .forEach(n => n.classList.remove(this._inspectHoverOutlineClass));
+      document.querySelectorAll('.' + this._inspectLockedOutlineClass)
+        .forEach(n => n.classList.remove(this._inspectLockedOutlineClass));
+    }
+
+    // ── (lazy) create the fixed layer + the box div ─────────────────────────
+    _ensureSelectionBoxElements() {
+      if (this._selectionBoxLayer && this._selectionBoxLayer.isConnected) return true;
+      const layer = document.createElement('div');
+      layer.id = 'uicc-inspector-box-layer';
+      layer.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 0;
+        height: 0;
+        pointer-events: none;
+        z-index: 9999990;
+        overflow: visible;
       `;
-      document.head.appendChild(this._outlineStyleEl);
+      document.body.appendChild(layer);
+      const box = document.createElement('div');
+      box.id = 'sd-component-inspector';
+      layer.appendChild(box);
+      this._selectionBoxLayer = layer;
+      this._selectionBox = box;
+      return true;
+    }
+
+    // ── Sync: make the box occupy the element's EXACT border box ────────────
+    //      • no padding / inflation of any kind — the box IS the element's rect
+    //      • each EDGE is snapped to a whole device pixel, the same rounding the
+    //        browser applies when it paints the element itself. This is what
+    //        makes the box's stroke land on exactly the same physical pixels as
+    //        the element's edge at fractional display scaling (125%, 150%) or
+    //        browser zoom. Snapping the edges (rather than the width) keeps both
+    //        sides aligned instead of accumulating the error on one side.
+    //      • each corner radius is copied verbatim, so pills, circles and
+    //        elliptical corners are traced instead of approximated
+    //    The 2px stroke is then offset outward from this box by the browser's
+    //    own `outline-offset` logic, so no radius is ever recomputed here.
+    _syncSelectionBox(el) {
+      const layer = this._selectionBoxLayer;
+      const box   = this._selectionBox;
+      if (!layer || !box || !el || !el.isConnected) return;
+      const lr = layer.getBoundingClientRect();
+      const r  = el.getBoundingClientRect();
+
+      // Element CHANGE → let the CSS ease carry the box between elements.
+      // Otherwise keep `transition:none`, so scroll / resize / animation
+      // tracking is instant and never lags or drifts.
+      // The `exact-lock` class wins over the eased CSS transition (which is
+      // declared `!important`), so an inline `transition` cannot be used here.
+      if (el !== this._boxLastEl) {
+        this._boxElChangedAt = performance.now();
+        box.classList.remove('exact-lock');
+      } else if (this._boxElChangedAt !== null && performance.now() - this._boxElChangedAt > 120) {
+        this._boxElChangedAt = null;
+        box.classList.add('exact-lock');
+      }
+
+      const cs = window.getComputedStyle(el);
+
+      // Snap every edge to a whole device pixel — same rounding the browser
+      // uses when painting the element, so the stroke shares its physical pixels.
+      const dpr  = window.devicePixelRatio || 1;
+      const snap = (v) => Math.round(v * dpr) / dpr;
+      const left   = snap(r.left - lr.left);
+      const top    = snap(r.top  - lr.top);
+      const right  = snap(r.right  - lr.left);
+      const bottom = snap(r.bottom - lr.top);
+
+      box.style.display = 'block';
+      box.classList.add('active');
+      box.classList.toggle('locked', !!this._boxLocked);
+      box.style.left   = left + 'px';
+      box.style.top    = top  + 'px';
+      box.style.width  = (right  - left) + 'px';
+      box.style.height = (bottom - top)  + 'px';
+      // Per-corner copy — preserves elliptical / mixed radii that the
+      // `borderRadius` shorthand can flatten.
+      box.style.borderTopLeftRadius     = cs.borderTopLeftRadius;
+      box.style.borderTopRightRadius    = cs.borderTopRightRadius;
+      box.style.borderBottomRightRadius = cs.borderBottomRightRadius;
+      box.style.borderBottomLeftRadius  = cs.borderBottomLeftRadius;
+      this._boxLastEl = el;
+    }
+
+    // ── rAF loop: keeps the box glued during scroll / resize / animations ───
+    _startBoxTracking() {
+      if (this._boxRafId) return;
+      const tick = () => {
+        this._boxRafId = null;
+        if (!this._boxTarget) return;
+        if (this._boxTarget.isConnected) {
+          this._syncSelectionBox(this._boxTarget);
+          this._boxRafId = requestAnimationFrame(tick);
+        } else {
+          this._miroRemoveOutline();
+        }
+      };
+      this._boxRafId = requestAnimationFrame(tick);
     }
 
     _stopBoxTracking() {
@@ -813,21 +892,17 @@
       }
     }
 
-    // ── Ge: remove the outline from the highlighted element ─────────────────
+    // ── Ge: drop the ring + hide the selection box + stop the tracking loop ──
     _miroRemoveOutline() {
+      this._miroClearOutlineClasses();
       this._stopBoxTracking();
-      if (this._boxTarget && this._boxTarget.isConnected) {
-        this._boxTarget.classList.remove(this._inspectHoverOutlineClass);
-        this._boxTarget.classList.remove(this._inspectLockedOutlineClass);
-      }
-      // Also clean up any stray elements that might still have the class
-      document.querySelectorAll('.' + this._inspectHoverOutlineClass)
-        .forEach(n => n.classList.remove(this._inspectHoverOutlineClass));
-      document.querySelectorAll('.' + this._inspectLockedOutlineClass)
-        .forEach(n => n.classList.remove(this._inspectLockedOutlineClass));
       this._boxTarget = null;
       this._boxLastEl = null;
       this._boxElChangedAt = null;
+      if (this._selectionBox) {
+        this._selectionBox.classList.remove('active', 'locked', 'exact-lock');
+        this._selectionBox.style.display = 'none';
+      }
     }
 
     // ── St: apply the persistent "selected" outline (Miro asset-inspector-editing) ──
@@ -1065,112 +1140,87 @@ _miroSetHovered(el) {
       }
     }
 
-    // ── Helper: resolve target element under cursor (including media proximity) ─
-    _miroResolveTarget(target, px, py) {
-      if (!target || target.nodeType !== 1) return null;
-      if (this.isOwnUI(target)) return null;
+    // ── xt: mouseover handler — Miro-exact ────────────────────────────────────
+    //    Two details here are the whole reason selection felt "off" before:
+    //      1. If the target is not itself selectable Miro BAILS. It does not
+    //         walk up to an ancestor, so hovering a gap never promotes the
+    //         selection to a wrapper <div>.
+    //      2. Element changes happen ONLY here, never on mousemove.
+    _miroOnMouseover = (e) => {
+      if (!this.isSelectionMode) return;
+      const target = e.target;
+      if (this.isOwnUI(target) || !this.isSelectable(target)) return;
 
       let el = target;
-      if (!this.isSelectable(el)) {
-        el = el.parentElement;
-        while (el && el !== document.body && el !== document.documentElement) {
-          if (this.isSelectable(el)) break;
-          el = el.parentElement;
-        }
-        if (!el || !this.isSelectable(el)) return null;
-      }
-
-      // prefer nearest media child under cursor (Miro exact logic)
-      const media = el.querySelectorAll('img, video, audio, canvas');
-      if (media.length > 0 && px !== null && py !== null) {
+      // Prefer the nearest media child that actually contains the pointer.
+      const media = target.querySelectorAll('img, video, audio, canvas');
+      if (media.length > 0) {
         let best = null, bestDist = Infinity;
+        const px = this.pointerX, py = this.pointerY;
         media.forEach(m => {
           const r = m.getBoundingClientRect();
           const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-          const d = Math.hypot(cx - px, cy - py);
+          const d = Math.sqrt(Math.pow(cx - px, 2) + Math.pow(cy - py, 2));
           if (px >= r.left && px <= r.right && py >= r.top && py <= r.bottom && d < bestDist) {
             bestDist = d; best = m;
           }
         });
         if (best) el = best;
       }
-      return el;
+      if (el !== this.currentElement) this._miroSetHovered(el);
     }
 
-    // ── xt: mouseover handler ─────────────────────────────────────────────────
-    _miroOnMouseover = (e) => {
-      if (!this.isSelectionMode || this._scrollLocked) return;
-      const target = e.target;
-      if (this.isOwnUI(target)) return;
-
-      const px = this.pointerX ?? e.clientX;
-      const py = this.pointerY ?? e.clientY;
-      const el = this._miroResolveTarget(target, px, py);
-      if (el && el !== this.currentElement) {
-        this._miroSetHovered(el);
-      }
-    }
-
-    // ── At: mouseout handler ──────────────────────────────────────────────────
+    // ── At: mouseout handler — Miro-exact ─────────────────────────────────────
+    //    Clear unless the pointer moved into a descendant of the current
+    //    element. No scroll-lock special-casing.
     _miroOnMouseout = (e) => {
       if (!this.isSelectionMode) return;
-      const target = e.target;
-      if (this.isOwnUI(target)) return;
+      if (this.isOwnUI(e.target)) return;
       const related = e.relatedTarget;
-      // If mouse left the window entirely, clear everything
-      if (!related) {
-        this._scrollLocked = false;
-        this._miroClearHover();
-        this.currentElement = null;
-        return;
-      }
-      // If hover focus is locked due to scrolling, do not clear
-      if (this._scrollLocked) return;
-      // don't clear if moving into a child of the current element
-      if (this.currentElement && this.currentElement.contains(related)) return;
+      if (related && this.currentElement && this.currentElement.contains(related)) return;
       this._miroClearHover();
       this.currentElement = null;
     }
 
-    // ── Ct: mousemove handler — updates pointer coords & handles hover ────────
+    // ── Ct: mousemove handler ─────────────────────────────────────────────────
+    //    Records pointer coordinates and moves the coord pill, like Miro's `Ct`.
+    //    It deliberately does NOT take over element changes from mouseover — the
+    //    old version re-resolved on every move and fought with mouseover, which
+    //    made the highlight jump to the wrong element.
+    //
+    //    It does, however, fill a VACUUM. Hover state driven purely by mouseover
+    //    has no recovery path: mouseover fires only on element entry, so if that
+    //    one event is missed (scroll moving a new element under a stationary
+    //    cursor, an SPA re-render, a synthetic event, or a target that failed the
+    //    selectable check) nothing is highlighted and nothing will re-trigger
+    //    until the pointer leaves and re-enters a different element. That is the
+    //    "sometimes no border appears" case. The guard below only acts when
+    //    there is no live highlight under the pointer, so it can never override
+    //    a correct one.
     _miroOnMousemove = (e) => {
       if (!this.isSelectionMode) return;
+      this.pointerX = e.clientX;
+      this.pointerY = e.clientY;
+      this._miroUpdateCoordLabel(e.clientX, e.clientY);
 
-      const prevX = this.pointerX;
-      const prevY = this.pointerY;
-      const currX = e.clientX;
-      const currY = e.clientY;
-
-      // If pointer coords haven't physically moved (e.g. synthetic mousemove on scroll), stay locked
-      if (prevX !== null && prevY !== null && prevX === currX && prevY === currY) {
-        return;
+      // Already highlighting something that still sits under the cursor → leave
+      // it alone. mouseover owns transitions between elements.
+      const cur = this.currentElement;
+      if (cur && cur.isConnected) {
+        const r = cur.getBoundingClientRect();
+        if (e.clientX >= r.left && e.clientX <= r.right &&
+            e.clientY >= r.top  && e.clientY <= r.bottom) return;
       }
 
-      this.pointerX = currX;
-      this.pointerY = currY;
-      this._scrollLocked = false;
-
-      const target = e.target;
-      if (this.isOwnUI(target)) return;
-
-      const el = this._miroResolveTarget(target, currX, currY);
-      if (el) {
-        if (el !== this.currentElement) {
-          this._miroSetHovered(el);
-        }
-      } else {
-        if (this.currentElement) {
-          this._miroClearHover();
-          this.currentElement = null;
-        }
-      }
+      const under = document.elementFromPoint(e.clientX, e.clientY);
+      if (!under || this.isOwnUI(under) || !this.isSelectable(under)) return;
+      if (under !== cur) this._miroSetHovered(under);
     }
 
     // ── wheel / scroll handlers — locks hover focus and re-syncs the viewport canvas ─
     _miroOnWheel = () => {
       if (!this.isSelectionMode) return;
       if (this.currentElement && this.currentElement.isConnected) {
-        this._scrollLocked = true;
         this._refreshInspectorVisuals();
       }
     }
@@ -1178,24 +1228,26 @@ _miroSetHovered(el) {
     _miroOnScroll = () => {
       if (!this.isSelectionMode) return;
       if (this.currentElement && this.currentElement.isConnected) {
-        this._scrollLocked = true;
         this._refreshInspectorVisuals();
       }
     }
 
-    // ── vt: click handler ─────────────────────────────────────────────────────
+    // ── vt: click handler — Miro-exact target resolution ──────────────────────
     _miroOnClick = (e) => {
       if (!this.isSelectionMode) return;
       if (this.isOwnUI(e.target)) return;
       e.preventDefault();
       e.stopImmediatePropagation();
       const el = this.currentElement || document.elementFromPoint(e.clientX, e.clientY);
-      if (!el || this.isOwnUI(el) || !this.isSelectable(el)) return;
+      if (!el || this.isOwnUI(el)) return;
       this.selectedElement = el;
       this._lastExtraction = null;
       this.exitSelectionMode();
-      this._miroApplySelectedOutline(this.selectedElement);
-      // Persist the selection box UI (locked + pulse) on the chosen element
+      // NOTE: the dashed `.uicc-inspector-selected` outline is deliberately not
+      // applied. It sits on the element while the locked ring sits on the box,
+      // and two rings from two differently-snapped boxes are what produced the
+      // doubled, misaligned edge. The locked ring plus its pulse already marks
+      // the selection, so this stays a single ring.
       this._miroAddOutline(this.selectedElement, true);
       this.setActiveButton('selector');
       this.showSelectedComponent();
@@ -1210,7 +1262,6 @@ _miroSetHovered(el) {
         if (!this.currentElement) return;
         const next = this.nextSelectable(this.currentElement);
         if (next) {
-          this._scrollLocked = true;
           this._miroSetHovered(next);
           next.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
@@ -1220,7 +1271,6 @@ _miroSetHovered(el) {
         if (!this.currentElement) return;
         const prev = this.prevSelectable(this.currentElement);
         if (prev) {
-          this._scrollLocked = true;
           this._miroSetHovered(prev);
           prev.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
@@ -1235,9 +1285,8 @@ _miroSetHovered(el) {
     // ── Jr: start inspector ───────────────────────────────────────────────────
     startSelectorMode() {
       this.isSelectionMode = true;
-      this._scrollLocked = false;
-      this.pointerX = null;
-      this.pointerY = null;
+      this.pointerX = 0;
+      this.pointerY = 0;
       this.currentView = 'selector';
       this.collapseToolbar('selector');
       if (this.overlay?.classList) this.overlay.classList.remove('uicc-hidden');
@@ -1262,9 +1311,8 @@ _miroSetHovered(el) {
     // ── Et: stop inspector ────────────────────────────────────────────────────
     exitSelectionMode() {
       this.isSelectionMode = false;
-      this._scrollLocked = false;
-      this.pointerX = null;
-      this.pointerY = null;
+      this.pointerX = 0;
+      this.pointerY = 0;
       if (this.overlay?.classList) this.overlay.classList.add('uicc-hidden');
       if (document.body?.classList) document.body.classList.remove('uicc-selection-active');
       if (document.body) document.body.style.cursor = '';
@@ -1303,6 +1351,7 @@ _miroSetHovered(el) {
         if (!this.isSelectionMode || !this.currentElement?.isConnected) return;
         this._miroDrawGuidelines(this.currentElement);
         this._miroDrawBoxModel(this.currentElement);
+        if (this._boxTarget === this.currentElement) this._syncSelectionBox(this.currentElement);
       });
     }
     onViewportChange = () => { this._refreshInspectorVisuals(); }
@@ -1755,8 +1804,8 @@ _miroSetHovered(el) {
           for (const prop of propsToExtract) {
             const value = computedStyle.getPropertyValue(prop);
             if (!value || value === "" || value === defaults[prop]) continue;
-            if (prop === "outline" && value.includes("49, 93, 76")) continue;
-            if (prop === "outline-offset" && computedStyle.getPropertyValue("outline").includes("49, 93, 76")) continue;
+            if (prop === "outline" && /49, 93, 76|45, 138, 104/.test(value)) continue;
+            if (prop === "outline-offset" && /49, 93, 76|45, 138, 104/.test(computedStyle.getPropertyValue("outline"))) continue;
             styles.push(`${prop}:${value}`);
           }
           if (styles.length > 0) {
@@ -1786,8 +1835,23 @@ _miroSetHovered(el) {
 
     // ── Miro-exact iframe document population + auto zoom & height scaling ────
     async renderIframePreview(element) {
-      const iframe = this.toolbar?.querySelector('#uicc-preview-iframe');
+      let iframe = this.toolbar?.querySelector('#uicc-preview-iframe');
       if (!iframe) return;
+
+      // This method awaits the preview build, and the panel can be re-rendered
+      // during that gap (a style edit, a new selection, switching views). The
+      // iframe captured above would then be detached, and a detached iframe has
+      // no browsing context — `contentWindow` is null, so touching
+      // `contentWindow.document` throws. Tag each run so a superseded one stops,
+      // and re-query the iframe after every await instead of trusting the
+      // captured reference.
+      const renderId = (this._previewRenderId || 0) + 1;
+      this._previewRenderId = renderId;
+      const liveIframe = () => {
+        if (this._previewRenderId !== renderId) return null; // superseded
+        const el = this.toolbar?.querySelector('#uicc-preview-iframe');
+        return el && el.isConnected ? el : null;
+      };
 
       // Real on-page width of the selected element. Wide selections (e.g. the
       // whole website) are previewed at this width so responsive media queries
@@ -1799,7 +1863,8 @@ _miroSetHovered(el) {
 
       // Show Miro's exact loading spinner state initially
       try {
-        const doc = iframe.contentDocument || iframe.contentWindow.document;
+        const doc = iframe.contentDocument || iframe.contentWindow?.document;
+        if (!doc) throw new Error('preview iframe detached');
         doc.open();
         doc.write(`<html><body style="margin:0; display:flex; align-items:center; justify-content:center; height:100%; font-family:-apple-system,BlinkMacSystemFont,sans-serif; color:#9ca3af; font-size:12px; gap:8px;">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2" style="animation:uicc-spin 1s linear infinite;"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
@@ -1859,6 +1924,11 @@ _miroSetHovered(el) {
       // Prefer the UICCPreview loader (exact Miro Gc port: minimal-reset doc +
       // 150ms auto-scale with zoom clamp). The inline template below remains as
       // the fallback path when the module is unavailable.
+      // Re-resolve after the awaits above; bail if this run was superseded or
+      // the panel was re-rendered while the preview was being built.
+      iframe = liveIframe();
+      if (!iframe) return;
+
       if (globalThis.UICCPreview && typeof globalThis.UICCPreview.writePreviewToIframe === 'function') {
         globalThis.UICCPreview.writePreviewToIframe(iframe, html, css, designWidth);
         return;
@@ -1910,15 +1980,18 @@ ${html}
           if (container) container.style.overflowX = '';
         }
 
-        const doc = iframe.contentDocument || iframe.contentWindow.document;
+        const doc = iframe.contentDocument || iframe.contentWindow?.document;
+        if (!doc) return;
         doc.open();
         doc.write(docHtml);
         doc.close();
 
         // Miro's exact auto-sizing with 150ms delay
         setTimeout(() => {
+          if (!iframe.isConnected) return;
           try {
             const body = doc.body;
+            if (!body) return;
             const firstChild = body.firstElementChild;
             if (firstChild) {
               const rect = firstChild.getBoundingClientRect();

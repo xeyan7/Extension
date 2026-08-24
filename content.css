@@ -614,7 +614,21 @@ body.uicc-selection-active { cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D'h
   top: 0;
   z-index: inherit;
   pointer-events: none !important;
-  border: 2px solid #2d8a68 !important;
+  /* The ring lives here, on this extension's own layer — never on the page
+     element. On the element it was at the page's mercy: an ancestor with
+     `overflow: hidden` clips it, a later-painting sibling paints over it, and
+     the page cascade can suppress it, so it sometimes did not appear at all.
+     This layer is `position: fixed` at the top of the stacking order, so none
+     of that can reach it.
+     Alignment is handled in JS instead: _syncSelectionBox snaps each edge of
+     this box to a whole device pixel, the same rounding the browser applies
+     when painting the element, so the stroke sits on the element's own physical
+     pixels even at 125%/150% scaling.
+     `outline` rather than `border`, because a border is painted INSIDE the box
+     and would cover the component's outer 2px. */
+  border: 0 !important;
+  outline: 2px solid #2d8a68 !important;
+  outline-offset: 2px !important;
   cursor: pointer !important;
   background: rgba(49, 93, 76, 0.08) !important;
   transition: top 0.12s cubic-bezier(0.16, 1, 0.3, 1), left 0.12s cubic-bezier(0.16, 1, 0.3, 1), width 0.12s cubic-bezier(0.16, 1, 0.3, 1), height 0.12s cubic-bezier(0.16, 1, 0.3, 1), border-radius 0.12s ease-out, opacity 0.15s ease-out !important;
@@ -624,8 +638,15 @@ body.uicc-selection-active { cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D'h
 #sd-component-inspector.active {
   opacity: 1;
 }
+/* Exact-lock: while the box tracks the SAME element it must not ease, or it
+   trails the element during scroll/resize and appears to clip it. The eased
+   transition above still plays when the box jumps between elements. */
+#sd-component-inspector.exact-lock {
+  transition: none !important;
+}
 #sd-component-inspector.locked {
-  border: 3px solid #2d8a68 !important;
+  outline: 3px solid #2d8a68 !important;
+  outline-offset: 2px !important;
   box-shadow: 0 0 0 2px rgba(45, 138, 104, 0.3) !important;
   animation: sd-pulse-shadow 1.5s ease-in-out infinite !important;
 }
@@ -634,19 +655,18 @@ body.uicc-selection-active { cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D'h
   50% { box-shadow: 0 0 0 2px rgba(45, 138, 104, 0.5) !important; }
 }
 
-/* ── Backup hover rule (used only if the JS box layer is unavailable) ───── */
-.uicc-inspector-outline {
-  outline: 2px solid #315d4c !important;
-  outline-offset: 2px !important;
-}
-
 /* ── Persistent selected outline (applied to the selected element itself) ── */
 .uicc-inspector-selected {
   outline: 1.5px dashed #315d4c !important;
   outline-offset: 2px !important;
 }
 
-.uicc-guidelines { position: fixed; top: 0; left: 0; z-index: var(--uicc-layer-guide); width: 100%; height: 100%; pointer-events: none; }
+/* No element-level ring rules any more — the ring is drawn on
+   #sd-component-inspector above, where the page cannot clip, cover or override
+   it. The class names are still stripped during extraction for safety, in case
+   an older session left one behind. */
+
+.uicc-guidelines { position: absolute; top: 0; left: 0; z-index: var(--uicc-layer-guide); width: 100%; pointer-events: none; }
 
 @media (max-width: 520px) {
   #sd-toolbar { right: 8px !important; max-width: calc(100vw - 16px); }

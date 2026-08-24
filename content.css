@@ -636,11 +636,11 @@ body.uicc-selection-active { cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D'h
   animation: sd-pulse-shadow 1.5s ease-in-out infinite !important;
 }
 .uicc-hover-outline {
-  outline: 2px solid #2d8a68 !important;
+  outline: 2.5px solid #2d8a68 !important;
   outline-offset: 2px !important;
 }
 .uicc-locked-outline {
-  outline: 3px solid #2d8a68 !important;
+  outline: 2.5px solid #2d8a68 !important;
   outline-offset: 2px !important;
   animation: uicc-outline-pulse 1.5s ease-in-out infinite !important;
 }
@@ -655,7 +655,7 @@ body.uicc-selection-active { cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D'h
 
 /* ── Persistent selected outline (applied to the selected element itself) ── */
 .uicc-inspector-selected {
-  outline: 1.5px dashed #315d4c !important;
+  outline: 2.5px dashed #315d4c !important;
   outline-offset: 2px !important;
 }
 

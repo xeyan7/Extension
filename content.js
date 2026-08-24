@@ -637,7 +637,7 @@
       this._inspectHighlightStyle.id = 'uicc-inspector-highlight-style';
       this._inspectHighlightStyle.textContent = `
         .${this._inspectHighlightClass} {
-          outline: 2px solid #315d4c !important;
+          outline: 2.5px solid #315d4c !important;
           outline-offset: 2px !important;
         }
       `;

@@ -682,7 +682,7 @@
       this._inspectOverlay = el;
     }
 
-    // ── Or: create the fixed viewport-space guidelines canvas (q) ────────────
+    // ── Or: create the absolute guidelines container (q) — Miro exact ────────
     _miroCreateGuidelines() {
       if (this._inspectGuidelinesEl) {
         this._inspectGuidelinesEl.style.display = '';
@@ -691,14 +691,13 @@
       const el = document.createElement('div');
       el.id = 'uicc-inspector-guidelines';
       el.style.cssText = `
-        position: fixed;
+        position: absolute;
         top: 0;
         left: 0;
         width: 100%;
-        height: 100%;
         pointer-events: none;
         z-index: 999995;
-        overflow: hidden;
+        overflow: visible;
       `;
       document.body.appendChild(el);
       this._inspectGuidelinesEl = el;
@@ -912,20 +911,22 @@
         .forEach(n => n.classList.remove(this._inspectSelectedClass));
     }
 
-    // ── Me: draw guidelines SVG lines in the fixed viewport canvas ────────────
+    // ── Me: draw guidelines SVG lines in the absolute guidelines div — Miro exact ─
     _miroDrawGuidelines(el) {
       const q = this._inspectGuidelinesEl;
       if (!q) return;
       const rect = el.getBoundingClientRect();
-      const qr   = q.getBoundingClientRect();   // canvas origin in viewport space
+      const scrollX = window.scrollX || document.documentElement.scrollLeft;
+      const scrollY = window.scrollY || document.documentElement.scrollTop;
+      const scrollW = document.scrollingElement.scrollWidth;
+      const scrollH = document.scrollingElement.scrollHeight;
+      const viewW   = document.documentElement.clientWidth;
+      const absTop    = rect.top    + scrollY;
+      const absRight  = rect.right  + scrollX;
+      const absBottom = rect.bottom + scrollY;
+      const absLeft   = rect.left   + scrollX;
 
-      // Coordinates RELATIVE to the fixed canvas → any containing-block or
-      // inner-scroll displacement cancels out (same trick as the box).
-      const left   = rect.left   - qr.left;
-      const right  = rect.right  - qr.left;
-      const top    = rect.top    - qr.top;
-      const bottom = rect.bottom - qr.top;
-
+      q.style.height = scrollH + 'px';
       const NS = 'http://www.w3.org/2000/svg';
       let svg = q.querySelector('svg');
       if (!svg) {
@@ -933,13 +934,14 @@
         svg.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;overflow:visible;';
         q.insertBefore(svg, q.firstChild);
       }
-      svg.setAttribute('width', q.clientWidth + 'px');
-      svg.setAttribute('height', q.clientHeight + 'px');
+      svg.setAttribute('width', '100%');
+      svg.setAttribute('viewBox', `0 0 ${viewW} ${scrollH}`);
+      svg.setAttribute('preserveAspectRatio', 'none');
       svg.innerHTML = `
-        <line x1="${left}"   x2="${left}"   y1="0" y2="${q.clientHeight}" stroke="rgba(135,112,163,0.4)" stroke-width="1" stroke-dasharray="4 4" />
-        <line x1="${right}"  x2="${right}"  y1="0" y2="${q.clientHeight}" stroke="rgba(135,112,163,0.4)" stroke-width="1" stroke-dasharray="4 4" />
-        <line x1="0" y1="${top}"    x2="${q.clientWidth}" y2="${top}"    stroke="rgba(135,112,163,0.4)" stroke-width="1" stroke-dasharray="4 4" />
-        <line x1="0" y1="${bottom}" x2="${q.clientWidth}" y2="${bottom}" stroke="rgba(135,112,163,0.4)" stroke-width="1" stroke-dasharray="4 4" />
+        <line x1="${absLeft}"  y1="0" x2="${absLeft}"  y2="${scrollH}" stroke="rgba(135,112,163,0.4)" stroke-width="1" stroke-dasharray="4 4" />
+        <line x1="${absRight}" y1="0" x2="${absRight}" y2="${scrollH}" stroke="rgba(135,112,163,0.4)" stroke-width="1" stroke-dasharray="4 4" />
+        <line x1="0" y1="${absTop}"    x2="${scrollW}" y2="${absTop}"    stroke="rgba(135,112,163,0.4)" stroke-width="1" stroke-dasharray="4 4" />
+        <line x1="0" y1="${absBottom}" x2="${scrollW}" y2="${absBottom}" stroke="rgba(135,112,163,0.4)" stroke-width="1" stroke-dasharray="4 4" />
       `;
     }
 
@@ -948,42 +950,43 @@
       if (this._inspectGuidelinesEl) this._inspectGuidelinesEl.innerHTML = '';
     }
 
-    // ── Te: draw padding value pills (green number badges, no filled boxes) ───
+    // ── Te: draw box model (margins + paddings) — Miro exact ───────────────
     _miroDrawBoxModel(el) {
       const q = this._inspectGuidelinesEl;
       if (!q) return;
       q.querySelectorAll('.uicc-inspector-boxmodel').forEach(d => d.remove());
-
-      const rect = el.getBoundingClientRect();
-      const qr   = q.getBoundingClientRect();   // canvas origin in viewport space
-      const cs   = window.getComputedStyle(el);
-
-      // Viewport-space relative to the fixed canvas (aligns with box + guides).
-      const absTop  = rect.top  - qr.top;
-      const absLeft = rect.left - qr.left;
-      const w = rect.width;
-      const h = rect.height;
-
-      const pT = parseFloat(cs.paddingTop)    || 0;
-      const pR = parseFloat(cs.paddingRight)  || 0;
-      const pB = parseFloat(cs.paddingBottom) || 0;
-      const pL = parseFloat(cs.paddingLeft)   || 0;
-      const bT = parseFloat(cs.borderTopWidth)    || 0;
-      const bR = parseFloat(cs.borderRightWidth)  || 0;
-      const bB = parseFloat(cs.borderBottomWidth) || 0;
-      const bL = parseFloat(cs.borderLeftWidth)   || 0;
-
-      const hasPadding = pT > 0 || pR > 0 || pB > 0 || pL > 0;
-      if (!hasPadding) return;
-
-      const container = document.createElement('div');
-      container.className = 'uicc-inspector-boxmodel';
-      container.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;';
-
-      // Miro exact colour
-      const paddingBadge = 'rgba(76, 175, 80, 0.85)';
-
-      const labelStyle = `
+      q.querySelectorAll('.asset-inspector-boxmodel').forEach(d => d.remove());
+      const e = el.getBoundingClientRect();
+      const r = window.getComputedStyle(el);
+      const n = window.scrollX || document.documentElement.scrollLeft;
+      const l = window.scrollY || document.documentElement.scrollTop;
+      const c = e.top + l;
+      const f = e.left + n;
+      const m = e.width;
+      const o = e.height;
+      const s = Math.max(0, parseFloat(r.marginTop) || 0);
+      const a = Math.max(0, parseFloat(r.marginRight) || 0);
+      const i = Math.max(0, parseFloat(r.marginBottom) || 0);
+      const b = Math.max(0, parseFloat(r.marginLeft) || 0);
+      const u = parseFloat(r.paddingTop) || 0;
+      const h = parseFloat(r.paddingRight) || 0;
+      const g = parseFloat(r.paddingBottom) || 0;
+      const S = parseFloat(r.paddingLeft) || 0;
+      const A = parseFloat(r.borderTopWidth) || 0;
+      const C = parseFloat(r.borderRightWidth) || 0;
+      const d = parseFloat(r.borderBottomWidth) || 0;
+      const w = parseFloat(r.borderLeftWidth) || 0;
+      const v = s > 0 || a > 0 || i > 0 || b > 0;
+      const p = u > 0 || h > 0 || g > 0 || S > 0;
+      if (!v && !p) return;
+      const y = document.createElement('div');
+      y.className = 'uicc-inspector-boxmodel';
+      y.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;';
+      const x = 'rgba(135, 112, 163, 0.2)';
+      const E = 'rgba(135, 112, 163, 0.85)';
+      const $ = 'rgba(76, 175, 80, 0.2)';
+      const M = 'rgba(76, 175, 80, 0.85)';
+      const F = `
         position:absolute;
         color:#fff;
         font-size:10px;
@@ -994,27 +997,34 @@
         white-space:nowrap;
         pointer-events:none;
       `;
-
-      function box(t, l, bw, bh, size, badgeBg) {
-        if (size <= 0 || bw <= 0 || bh <= 0) return '';
-        const val = Math.round(size * 10) / 10;
-        return `<div style="${labelStyle}background:${badgeBg};left:${l + bw / 2}px;top:${t + bh / 2}px;transform:translate(-50%,-50%)">${val}</div>`;
+      function k(B, I, L, z, W, X, Y, T) {
+        if (X <= 0 || L <= 0 || z <= 0) return '';
+        const P = Math.round(X * 10) / 10;
+        let D = '';
+        D = 'left:50%;top:50%;transform:translate(-50%,-50%);';
+        return `<div style="position:absolute;top:${B}px;left:${I}px;width:${L}px;height:${z}px;background:${W};pointer-events:none;">
+          <div style="${F}background:${Y};${D}">${P}</div>
+        </div>`;
       }
-
-      let html = '';
-      if (hasPadding) {
-        const pt = absTop  + bT;
-        const pl = absLeft + bL;
-        const pw = w - bL - bR;
-        const ph = h - bT - bB;
-        if (pT > 0) html += box(pt,           pl,       pw, pT, pT, paddingBadge);
-        if (pB > 0) html += box(pt + ph - pB, pl,       pw, pB, pB, paddingBadge);
-        if (pL > 0) html += box(pt + pT,      pl,       pL, ph - pT - pB, pL, paddingBadge);
-        if (pR > 0) html += box(pt + pT,      pl + pw - pR, pR, ph - pT - pB, pR, paddingBadge);
+      let R = '';
+      if (v) {
+        if (s > 0) R += k(c - s, f, m, s, x, s, E, 'top');
+        if (i > 0) R += k(c + o, f, m, i, x, i, E, 'bottom');
+        if (b > 0) R += k(c, f - b, b, o, x, b, E, 'left');
+        if (a > 0) R += k(c, f + m, a, o, x, a, E, 'right');
       }
-
-      container.innerHTML = html;
-      q.appendChild(container);
+      if (p) {
+        const B = c + A;
+        const I = f + w;
+        const L = m - w - C;
+        const z = o - A - d;
+        if (u > 0) R += k(B, I, L, u, $, u, M, 'top');
+        if (g > 0) R += k(B + z - g, I, L, g, $, g, M, 'bottom');
+        if (S > 0) R += k(B + u, I, S, z - u - g, $, S, M, 'left');
+        if (h > 0) R += k(B + u, I + L - h, h, z - u - g, $, h, M, 'right');
+      }
+      y.innerHTML = R;
+      q.appendChild(y);
     }
 
     // ── Re: build and position the preview panel ──────────────────────────────

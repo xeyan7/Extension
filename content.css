@@ -614,21 +614,8 @@ body.uicc-selection-active { cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D'h
   top: 0;
   z-index: inherit;
   pointer-events: none !important;
-  /* The ring lives here, on this extension's own layer — never on the page
-     element. On the element it was at the page's mercy: an ancestor with
-     `overflow: hidden` clips it, a later-painting sibling paints over it, and
-     the page cascade can suppress it, so it sometimes did not appear at all.
-     This layer is `position: fixed` at the top of the stacking order, so none
-     of that can reach it.
-     Alignment is handled in JS instead: _syncSelectionBox snaps each edge of
-     this box to a whole device pixel, the same rounding the browser applies
-     when painting the element, so the stroke sits on the element's own physical
-     pixels even at 125%/150% scaling.
-     `outline` rather than `border`, because a border is painted INSIDE the box
-     and would cover the component's outer 2px. */
   border: 0 !important;
-  outline: 2px solid #2d8a68 !important;
-  outline-offset: 2px !important;
+  outline: 0 !important;
   cursor: pointer !important;
   background: rgba(49, 93, 76, 0.08) !important;
   transition: top 0.12s cubic-bezier(0.16, 1, 0.3, 1), left 0.12s cubic-bezier(0.16, 1, 0.3, 1), width 0.12s cubic-bezier(0.16, 1, 0.3, 1), height 0.12s cubic-bezier(0.16, 1, 0.3, 1), border-radius 0.12s ease-out, opacity 0.15s ease-out !important;
@@ -645,10 +632,21 @@ body.uicc-selection-active { cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D'h
   transition: none !important;
 }
 #sd-component-inspector.locked {
-  outline: 3px solid #2d8a68 !important;
-  outline-offset: 2px !important;
   box-shadow: 0 0 0 2px rgba(45, 138, 104, 0.3) !important;
   animation: sd-pulse-shadow 1.5s ease-in-out infinite !important;
+}
+.uicc-hover-outline {
+  outline: 2px solid #2d8a68 !important;
+  outline-offset: 2px !important;
+}
+.uicc-locked-outline {
+  outline: 3px solid #2d8a68 !important;
+  outline-offset: 2px !important;
+  animation: uicc-outline-pulse 1.5s ease-in-out infinite !important;
+}
+@keyframes uicc-outline-pulse {
+  0%, 100% { outline-color: rgba(45, 138, 104, 0.6) !important; }
+  50% { outline-color: rgba(45, 138, 104, 1) !important; }
 }
 @keyframes sd-pulse-shadow {
   0%, 100% { box-shadow: 0 0 0 2px rgba(45, 138, 104, 0.15) !important; }

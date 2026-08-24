@@ -532,21 +532,22 @@
       }
     }
 
+    // ── pe: Miro-exact one-to-one — own UI check
     isOwnUI(t) {
       if (!t) return false;
-      if (t.id && (t.id.startsWith('sd-') || t.id.startsWith('uicc-') || t.id === 'sd-component-inspector')) return true;
-      if (t.closest && t.closest('#sd-toolbar, #sd-component-inspector, #sd-tree-navigator, #uicc-guidelines, .uicc-selection-overlay, [id^="uicc-"], [id^="sd-"]')) return true;
+      if (t.id && (t.id.startsWith('sd-') || t.id.startsWith('uicc-') || t.id.startsWith('asset-inspector-') || t.id === 'sd-component-inspector')) return true;
+      if (t.closest && t.closest('#sd-toolbar, #sd-component-inspector, #sd-tree-navigator, #uicc-guidelines, .uicc-selection-overlay, [id^="uicc-"], [id^="sd-"], [id^="asset-inspector-"]')) return true;
       if (this.overlay && this.overlay.contains(t)) return true;
       if (this.toolbar && this.toolbar.contains(t)) return true;
+      if (this._inspectGuidelinesEl && this._inspectGuidelinesEl.contains(t)) return true;
+      if (this._inspectOverlay && this._inspectOverlay.contains(t)) return true;
+      if (this._inspectCoordLabel && this._inspectCoordLabel.contains(t)) return true;
       return false;
     }
 
-    // ── he: Miro-exact. Only documentElement, zero-size and hidden are out.
-    //    NOTE: <body> is deliberately allowed (Miro allows it), and own-UI is
-    //    checked separately by callers via isOwnUI (Miro's `pe`), exactly as
-    //    Miro does — never folded into this predicate.
+    // ── he: Miro-exact one-to-one — only documentElement, zero-size and hidden are out
     isSelectable(t) {
-      if (!t || t.nodeType !== 1 || t === document.documentElement) return false;
+      if (!t || t === document.documentElement) return false;
       const rect = t.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return false;
       const cs = window.getComputedStyle(t);
@@ -744,32 +745,16 @@
       this._inspectCoordLabel.textContent = `${Math.round(x + window.scrollX)}, ${Math.round(y + window.scrollY)}`;
     }
 
-    // ── Le: highlight the hovered element ────────────────────────────────────
-    //    ── How the UI and Miro's accuracy coexist ──────────────────────────
-    //    They previously fought because BOTH tried to own the stroke geometry:
-    //      • This extension's UI drew the stroke as a `border` on a measured
-    //        div. With `box-sizing:border-box` a border is painted INSIDE the
-    //        rect, so it covered the element's outer 2px and read as "clipping".
-    //      • Miro's accuracy comes from `outline` + `outline-offset`, which is
-    //        painted OUTSIDE and whose corner curves the BROWSER derives from
-    //        border-radius. Nothing is measured, so nothing can be wrong.
-    //    The fix is to split the two concerns: the browser owns the geometry,
-    //    this extension owns the appearance. The overlay box is still the thing
-    //    that renders (fill, colours, thicknesses, pulse, glide — all ours),
-    //    but its stroke primitive is `outline` instead of `border`, so the same
-    //    browser computation Miro depends on is what places it. No radius
-    //    arithmetic, no inflation, and the page element is never restyled.
+    // ── Le/Re: highlight — Miro one-to-one (element outline for border) + keep UI fill box ─
+    // Miro Re: Ge() + t.classList.add(Fe) where Fe="asset-inspector-outline" (outline:2px solid #6366F1)
+    // We add Miro-exact element outline for perfect alignment (border) and keep our fixed-layer box for light fill
     _miroAddOutline(el, locked = false) {
       if (!el || !el.isConnected) return;
-
-      // The ring is drawn by the overlay box, never on the page element.
-      // Painting it on the element made it subject to the page: an ancestor with
-      // `overflow: hidden` clips it, a later-painting sibling covers it, and the
-      // page cascade can suppress it — which is why it sometimes failed to show
-      // even though the element resolved correctly. The box lives in a
-      // `position:fixed` top-level layer, so none of that can reach it, and edge
-      // snapping in _syncSelectionBox keeps it pixel-aligned with the element.
+      // Miro Ge/Re one-to-one
       this._miroClearOutlineClasses();
+      const cls = locked ? this._inspectLockedOutlineClass : this._inspectHoverOutlineClass;
+      el.classList.add(cls);
+      // Keep UI: fill box on fixed layer (old UI light fill, smooth, pulse)
       if (!this._ensureSelectionBoxElements()) return;
       this._boxTarget = el;
       this._boxLocked = !!locked;

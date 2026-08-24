@@ -844,16 +844,22 @@
 
       const cs = window.getComputedStyle(el);
 
-      const left = r.left - lr.left;
-      const top = r.top - lr.top;
+      // Snap every edge to a whole device pixel — same rounding the browser
+      // uses when painting the element, so the stroke shares its physical pixels.
+      const dpr  = window.devicePixelRatio || 1;
+      const snap = (v) => Math.round(v * dpr) / dpr;
+      const left   = snap(r.left - lr.left);
+      const top    = snap(r.top  - lr.top);
+      const right  = snap(r.right  - lr.left);
+      const bottom = snap(r.bottom - lr.top);
 
       box.style.display = 'block';
       box.classList.add('active');
       box.classList.toggle('locked', !!this._boxLocked);
       box.style.left   = left + 'px';
       box.style.top    = top  + 'px';
-      box.style.width  = r.width + 'px';
-      box.style.height = r.height + 'px';
+      box.style.width  = (right  - left) + 'px';
+      box.style.height = (bottom - top)  + 'px';
       // Per-corner copy — preserves elliptical / mixed radii that the
       // `borderRadius` shorthand can flatten.
       box.style.borderTopLeftRadius     = cs.borderTopLeftRadius;

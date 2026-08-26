@@ -71,6 +71,17 @@
       this.currentElement = null; // currently hovered element (Q in Miro)
       this.pointerX = 0;
       this.pointerY = 0;
+
+      // ── Scroll-lock: freeze hover focus while the page scrolls ──────────────
+      // When the wheel/page scrolls under a STATIONARY cursor the browser still
+      // fires boundary events (mouseout on the old element, mouseover on the one
+      // that slid under the pointer). Without this flag the highlight would hop
+      // between elements while the user is only scrolling. While locked, the
+      // hover stays on `currentElement`; the first real pointer movement clears
+      // the lock and normal cursor-driven hovering resumes.
+      this._scrollLocked = false;
+      this._lastMoveX = null;   // last coords from a REAL mousemove (null = none yet)
+      this._lastMoveY = null;
       this.extractor = globalThis.UICCExtractor
         ? new globalThis.UICCExtractor.Extractor({ runtime: getExtensionRuntime(), baseUrl: window.location.href })
         : null;
@@ -870,6 +881,16 @@
       }
     }
 
+    // ── Pin the box to exact per-frame tracking, right now ──────────────────
+    //    The eased glide exists only to carry the box BETWEEN elements. Scrolling
+    //    never changes the element, so if a scroll starts inside the 120ms glide
+    //    window the box would swim behind its element. Settling the glide early
+    //    keeps the fill locked. A later element change re-arms it as usual.
+    _miroPinBoxExact() {
+      this._boxElChangedAt = null;
+      if (this._selectionBox) this._selectionBox.classList.add('exact-lock');
+    }
+
     // ── Ge: drop the ring + hide the selection box + stop the tracking loop ──
     _miroRemoveOutline() {
       this._miroClearOutlineClasses();
@@ -1133,8 +1154,11 @@ _miroSetHovered(el) {
     //         walk up to an ancestor, so hovering a gap never promotes the
     //         selection to a wrapper <div>.
     //      2. Element changes happen ONLY here, never on mousemove.
+    //      3. While the page is scrolling under a stationary cursor we BAIL, so
+    //         the highlight stays locked on the element the user was pointing at
+    //         instead of hopping to whatever slid under the pointer.
     _miroOnMouseover = (e) => {
-      if (!this.isSelectionMode) return;
+      if (!this.isSelectionMode || this._scrollLocked) return;
       const target = e.target;
       if (this.isOwnUI(target) || !this.isSelectable(target)) return;
 
@@ -1159,12 +1183,22 @@ _miroSetHovered(el) {
 
     // ── At: mouseout handler — Miro-exact ─────────────────────────────────────
     //    Clear unless the pointer moved into a descendant of the current
-    //    element. No scroll-lock special-casing.
+    //    element, or unless hover focus is currently locked by scrolling.
     _miroOnMouseout = (e) => {
       if (!this.isSelectionMode) return;
       if (this.isOwnUI(e.target)) return;
       const related = e.relatedTarget;
-      if (related && this.currentElement && this.currentElement.contains(related)) return;
+      // Pointer left the window entirely → drop the lock and clear everything.
+      if (!related) {
+        this._scrollLocked = false;
+        this._miroClearHover();
+        this.currentElement = null;
+        return;
+      }
+      // Scrolling moved a different element under a stationary cursor → keep the
+      // current highlight. The lock is released by the next real mousemove.
+      if (this._scrollLocked) return;
+      if (this.currentElement && this.currentElement.contains(related)) return;
       this._miroClearHover();
       this.currentElement = null;
     }
@@ -1184,8 +1218,24 @@ _miroSetHovered(el) {
     //    "sometimes no border appears" case. The guard below only acts when
     //    there is no live highlight under the pointer, so it can never override
     //    a correct one.
+    //
+    //    Scroll-lock: this is also where the lock is RELEASED. Events whose
+    //    client coords are byte-identical to the previous move are synthetic
+    //    (browsers re-dispatch a move after a scroll to refresh :hover), so they
+    //    are ignored and the lock survives. Any genuine cursor movement clears
+    //    the lock and hover re-syncs with the pointer through the normal path.
     _miroOnMousemove = (e) => {
       if (!this.isSelectionMode) return;
+
+      // Physically stationary cursor (synthetic move emitted by a scroll) →
+      // keep the hover locked on the current element and change nothing.
+      if (this._lastMoveX !== null &&
+          e.clientX === this._lastMoveX && e.clientY === this._lastMoveY) return;
+
+      this._lastMoveX = e.clientX;
+      this._lastMoveY = e.clientY;
+      this._scrollLocked = false;
+
       this.pointerX = e.clientX;
       this.pointerY = e.clientY;
       this._miroUpdateCoordLabel(e.clientX, e.clientY);
@@ -1205,9 +1255,14 @@ _miroSetHovered(el) {
     }
 
     // ── wheel / scroll handlers — locks hover focus and re-syncs the viewport canvas ─
+    //    Scrolling never re-targets the hover. It pins the highlight to whatever
+    //    the user was already pointing at (the box + guidelines keep tracking it
+    //    as it moves) until the cursor is physically moved again.
     _miroOnWheel = () => {
       if (!this.isSelectionMode) return;
       if (this.currentElement && this.currentElement.isConnected) {
+        this._scrollLocked = true;
+        this._miroPinBoxExact();
         this._refreshInspectorVisuals();
       }
     }
@@ -1215,6 +1270,8 @@ _miroSetHovered(el) {
     _miroOnScroll = () => {
       if (!this.isSelectionMode) return;
       if (this.currentElement && this.currentElement.isConnected) {
+        this._scrollLocked = true;
+        this._miroPinBoxExact();
         this._refreshInspectorVisuals();
       }
     }
@@ -1244,6 +1301,9 @@ _miroSetHovered(el) {
         if (!this.currentElement) return;
         const next = this.nextSelectable(this.currentElement);
         if (next) {
+          // Keyboard navigation owns the hover; the scrollIntoView below must not
+          // let boundary events hand it back to whatever sits under the cursor.
+          this._scrollLocked = true;
           this._miroSetHovered(next);
           next.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
@@ -1253,6 +1313,7 @@ _miroSetHovered(el) {
         if (!this.currentElement) return;
         const prev = this.prevSelectable(this.currentElement);
         if (prev) {
+          this._scrollLocked = true;
           this._miroSetHovered(prev);
           prev.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
@@ -1269,6 +1330,9 @@ _miroSetHovered(el) {
       this.isSelectionMode = true;
       this.pointerX = 0;
       this.pointerY = 0;
+      this._scrollLocked = false;
+      this._lastMoveX = null;
+      this._lastMoveY = null;
       this.currentView = 'selector';
       this.collapseToolbar('selector');
       if (this.overlay?.classList) this.overlay.classList.remove('uicc-hidden');
@@ -1295,6 +1359,9 @@ _miroSetHovered(el) {
       this.isSelectionMode = false;
       this.pointerX = 0;
       this.pointerY = 0;
+      this._scrollLocked = false;
+      this._lastMoveX = null;
+      this._lastMoveY = null;
       if (this.overlay?.classList) this.overlay.classList.add('uicc-hidden');
       if (document.body?.classList) document.body.classList.remove('uicc-selection-active');
       if (document.body) document.body.style.cursor = '';

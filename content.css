@@ -615,7 +615,8 @@ body.uicc-selection-active { cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D'h
   z-index: inherit;
   pointer-events: none !important;
   border: 0 !important;
-  outline: 0 !important;
+  outline: 2.5px solid #2d8a68 !important;
+  outline-offset: 2px !important;
   cursor: pointer !important;
   background: rgba(49, 93, 76, 0.08) !important;
   transition: all 0.15s ease-out !important;
@@ -632,6 +633,8 @@ body.uicc-selection-active { cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D'h
   transition: none !important;
 }
 #sd-component-inspector.locked {
+  outline: 2.5px solid #2d8a68 !important;
+  outline-offset: 2px !important;
   box-shadow: 0 0 0 2px rgba(45, 138, 104, 0.3) !important;
   animation: sd-pulse-shadow 1.5s ease-in-out infinite !important;
 }
@@ -659,10 +662,10 @@ body.uicc-selection-active { cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D'h
   outline-offset: 2px !important;
 }
 
-/* No element-level ring rules any more — the ring is drawn on
-   #sd-component-inspector above, where the page cannot clip, cover or override
-   it. The class names are still stripped during extraction for safety, in case
-   an older session left one behind. */
+/* The crisp hover ring is drawn on #sd-component-inspector (fixed top-level
+   layer) so it cannot be clipped/covered by page overflow or cascade.
+   .uicc-hover/locked-outline are kept as a secondary element-level fallback
+   and are also stripped during extraction for safety. */
 
 .uicc-guidelines { position: absolute; top: 0; left: 0; z-index: var(--uicc-layer-guide); width: 100%; pointer-events: none; }
 
